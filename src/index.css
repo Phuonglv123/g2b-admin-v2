@@ -1,0 +1,69 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    /* MediaFlow Dark Theme - Orange Accent */
+    --background: 220 20% 10%;
+    --foreground: 0 0% 95%;
+    --card: 220 20% 13%;
+    --card-foreground: 0 0% 95%;
+    --popover: 220 20% 13%;
+    --popover-foreground: 0 0% 95%;
+    --primary: 28 100% 50%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 15% 18%;
+    --secondary-foreground: 0 0% 95%;
+    --muted: 220 15% 18%;
+    --muted-foreground: 220 10% 55%;
+    --accent: 28 100% 50%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 15% 30%;
+    --input: 220 15% 18%;
+    --ring: 28 100% 50%;
+    --radius: 0.75rem;
+    
+    /* Custom colors */
+    --sidebar: 220 20% 11%;
+    --sidebar-foreground: 0 0% 95%;
+    --sidebar-active: 28 100% 50%;
+    --chart-1: 28 100% 50%;
+    --chart-2: 45 100% 55%;
+    --chart-3: 220 15% 40%;
+    --success: 142 76% 36%;
+    --warning: 45 100% 55%;
+  }
+
+  .dark {
+    --background: 220 20% 10%;
+    --foreground: 0 0% 95%;
+    --card: 220 20% 13%;
+    --card-foreground: 0 0% 95%;
+    --popover: 220 20% 13%;
+    --popover-foreground: 0 0% 95%;
+    --primary: 28 100% 50%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 15% 18%;
+    --secondary-foreground: 0 0% 95%;
+    --muted: 220 15% 18%;
+    --muted-foreground: 220 10% 55%;
+    --accent: 28 100% 50%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 15% 30%;
+    --input: 220 15% 18%;
+    --ring: 28 100% 50%;
+  }
+}
+
+@layer base {
+  * {
+    border-color: hsl(var(--border));
+  }
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+  }
+}

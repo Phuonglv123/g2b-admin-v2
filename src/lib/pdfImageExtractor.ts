@@ -1,0 +1,158 @@
+import * as pdfjsLib from 'pdfjs-dist'
+import { supabase } from './supabase'
+
+// Set worker source - using CDN for compatibility
+pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`
+
+export interface ExtractedImage {
+  pageNumber: number
+  dataUrl: string
+  blob: Blob
+}
+
+export interface UploadedImage {
+  pageNumber: number
+  url: string
+}
+
+/**
+ * Extract images from PDF pages (converts each page to an image)
+ * @param file PDF file
+ * @param startPage Start page (1-indexed), default 2 (skip first page which is usually provider info)
+ * @param scale Image quality scale, default 2 for good quality
+ */
+export async function extractImagesFromPDF(
+  file: File,
+  startPage: number = 2,
+  scale: number = 2
+): Promise<ExtractedImage[]> {
+  const images: ExtractedImage[] = []
+  
+  try {
+    // Read file as ArrayBuffer
+    const arrayBuffer = await file.arrayBuffer()
+    
+    // Load PDF
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+    const numPages = pdf.numPages
+    
+    console.log(`PDF has ${numPages} pages, extracting from page ${startPage}`)
+    
+    // Extract each page starting from startPage
+    for (let pageNum = startPage; pageNum <= numPages; pageNum++) {
+      const page = await pdf.getPage(pageNum)
+      const viewport = page.getViewport({ scale })
+      
+      // Create canvas
+      const canvas = document.createElement('canvas')
+      const context = canvas.getContext('2d')
+      
+      if (!context) {
+        console.error(`Failed to get canvas context for page ${pageNum}`)
+        continue
+      }
+      
+      canvas.width = viewport.width
+      canvas.height = viewport.height
+      
+      // Render page to canvas
+      await page.render({
+        canvasContext: context,
+        viewport: viewport,
+        canvas: canvas,
+      } as never).promise
+      
+      // Convert to data URL and blob
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.9)
+      const blob = await new Promise<Blob>((resolve) => {
+        canvas.toBlob((b) => resolve(b!), 'image/jpeg', 0.9)
+      })
+      
+      images.push({
+        pageNumber: pageNum,
+        dataUrl,
+        blob,
+      })
+      
+      console.log(`Extracted page ${pageNum}`)
+    }
+    
+    return images
+  } catch (error) {
+    console.error('Error extracting images from PDF:', error)
+    throw error
+  }
+}
+
+/**
+ * Upload extracted images to Supabase Storage
+ * @param images Extracted images from PDF
+ * @param productCode Product code for folder naming
+ */
+export async function uploadImagesToStorage(
+  images: ExtractedImage[],
+  productCode: string
+): Promise<string[]> {
+  const uploadedUrls: string[] = []
+  
+  // Sanitize product code for folder name
+  const folderName = productCode.replace(/[^a-zA-Z0-9-_]/g, '_')
+  const timestamp = Date.now()
+  
+  for (const image of images) {
+    try {
+      const fileName = `${folderName}/${timestamp}_page_${image.pageNumber}.jpg`
+      
+      // Upload to Supabase Storage
+      const { error } = await supabase.storage
+        .from('product-images')
+        .upload(fileName, image.blob, {
+          contentType: 'image/jpeg',
+          cacheControl: '3600',
+          upsert: true,
+        })
+      
+      if (error) {
+        console.error(`Failed to upload page ${image.pageNumber}:`, error)
+        continue
+      }
+      
+      // Get public URL
+      const { data: urlData } = supabase.storage
+        .from('product-images')
+        .getPublicUrl(fileName)
+      
+      if (urlData?.publicUrl) {
+        uploadedUrls.push(urlData.publicUrl)
+        console.log(`Uploaded page ${image.pageNumber}: ${urlData.publicUrl}`)
+      }
+    } catch (error) {
+      console.error(`Error uploading page ${image.pageNumber}:`, error)
+    }
+  }
+  
+  return uploadedUrls
+}
+
+/**
+ * Extract images from PDF and upload to storage
+ * Combined function for convenience
+ */
+export async function extractAndUploadPDFImages(
+  file: File,
+  productCode: string,
+  startPage: number = 2
+): Promise<string[]> {
+  // Extract images
+  const images = await extractImagesFromPDF(file, startPage)
+  
+  if (images.length === 0) {
+    console.log('No images extracted from PDF')
+    return []
+  }
+  
+  // Upload to storage
+  const urls = await uploadImagesToStorage(images, productCode)
+  
+  return urls
+}

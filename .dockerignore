@@ -1,0 +1,37 @@
+# Dependencies
+node_modules
+
+# Build output
+dist
+
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Environment files (will be passed as build args)
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Documentation
+*.md
+!README.md
+
+# Docker files (no need to copy these into the build)
+Dockerfile
+docker-compose.yml
+.dockerignore

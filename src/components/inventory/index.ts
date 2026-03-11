@@ -1,0 +1,1 @@
+export { PDFUploadExtractor } from './PDFUploadExtractor'
