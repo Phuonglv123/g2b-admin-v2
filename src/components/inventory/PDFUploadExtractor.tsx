@@ -113,13 +113,13 @@ export const PDFUploadExtractor = ({
                   status: 'error' as UploadStatus,
                   result: {
                     success: false,
-                    error: error instanceof Error ? error.message : 'Lỗi không xác định',
+                    error: error instanceof Error ? error.message : 'Unknown error',
                   },
                 }
               : f
           )
         )
-        onError?.(error instanceof Error ? error.message : 'Lỗi không xác định')
+        onError?.(error instanceof Error ? error.message : 'Unknown error')
       }
     },
     [files, onExtracted, onError]
@@ -198,14 +198,14 @@ export const PDFUploadExtractor = ({
             <Upload className="h-8 w-8 text-primary" />
           </div>
           <div>
-            <p className="font-medium">Kéo thả file PDF hoặc hình ảnh vào đây</p>
+            <p className="font-medium">Drag and drop PDF or image files here</p>
             <p className="text-sm text-muted-foreground mt-1">
-              Hoặc click để chọn file • Hỗ trợ PDF, PNG, JPG, WebP
+              Or click to select files • Supports PDF, PNG, JPG, WebP
             </p>
           </div>
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <Sparkles className="h-4 w-4 text-yellow-500" />
-            <span>Sử dụng Gemini AI để trích xuất thông tin tự động</span>
+            <span>Using Gemini AI for automatic extraction</span>
           </div>
         </div>
       </div>
@@ -214,7 +214,7 @@ export const PDFUploadExtractor = ({
       {files.length > 0 && (
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <p className="text-sm font-medium">Files đã chọn ({files.length})</p>
+            <p className="text-sm font-medium">Selected files ({files.length})</p>
             {hasIdleFiles && (
               <Button
                 size="sm"
@@ -224,12 +224,12 @@ export const PDFUploadExtractor = ({
                 {isProcessing ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Đang xử lý...
+                    Processing...
                   </>
                 ) : (
                   <>
                     <Sparkles className="mr-2 h-4 w-4" />
-                    Trích xuất tất cả
+                    Extract all
                   </>
                 )}
               </Button>
@@ -297,12 +297,12 @@ export const PDFUploadExtractor = ({
 
       {/* Tips */}
       <div className="rounded-lg bg-muted/50 p-4">
-        <h4 className="font-medium text-sm mb-2">💡 Mẹo để có kết quả tốt nhất:</h4>
+        <h4 className="font-medium text-sm mb-2">💡 Tips for best results:</h4>
         <ul className="text-xs text-muted-foreground space-y-1">
-          <li>• File PDF nên có text rõ ràng, không scan mờ</li>
-          <li>• Hình ảnh nên có độ phân giải cao, không bị blur</li>
-          <li>• Thông tin kích thước, giá cả nên được ghi rõ trong tài liệu</li>
-          <li>• AI sẽ tự động điền các trường còn thiếu với giá trị mặc định</li>
+          <li>• PDF files should have clear text, not blurry scans</li>
+          <li>• Images should be high resolution, not blurry</li>
+          <li>• Size and price information should be clearly stated in the document</li>
+          <li>• AI will automatically fill in missing fields with default values</li>
         </ul>
       </div>
     </div>

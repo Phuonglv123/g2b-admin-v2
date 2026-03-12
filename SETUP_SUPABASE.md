@@ -115,3 +115,107 @@ UPDATE public.users SET role = 'admin' WHERE email = 'your-email@example.com';
 ## 📚 Documentation
 
 Chi tiết đầy đủ: `supabase/USER_MANAGEMENT.md`
+
+---
+
+## 🖼️ Setup Storage cho Product Images
+
+### Bước 1: Tạo Storage Bucket (QUAN TRỌNG!)
+
+**Cách 1: Qua Supabase Dashboard (Khuyến nghị)**
+
+1. Vào **Supabase Dashboard** > **Storage**
+2. Click **"New Bucket"**
+3. Nhập:
+   - Name: `g2b`
+   - ✅ Check **"Public bucket"** (để có thể truy cập public URL)
+4. Click **"Create bucket"**
+
+**Cách 2: Qua SQL Editor**
+
+Chạy file migration:
+```sql
+-- Copy và paste toàn bộ nội dung file này
+supabase/migrations/005_create_storage_bucket.sql
+```
+
+### Bước 2: Cấu hình RLS Policy
+
+Vào **SQL Editor** và chạy:
+
+```sql
+-- Drop existing policies if any
+DROP POLICY IF EXISTS "Public Read Access for g2b" ON storage.objects;
+DROP POLICY IF EXISTS "Authenticated Upload for g2b" ON storage.objects;
+DROP POLICY IF EXISTS "Authenticated Update for g2b" ON storage.objects;
+DROP POLICY IF EXISTS "Authenticated Delete for g2b" ON storage.objects;
+
+-- Allow public read access
+CREATE POLICY "Public Read Access for g2b"
+ON storage.objects FOR SELECT
+USING (bucket_id = 'g2b');
+
+-- Allow authenticated users to upload
+CREATE POLICY "Authenticated Upload for g2b"
+ON storage.objects FOR INSERT
+WITH CHECK (
+    bucket_id = 'g2b' 
+    AND auth.role() = 'authenticated'
+);
+
+-- Allow authenticated users to update
+CREATE POLICY "Authenticated Update for g2b"
+ON storage.objects FOR UPDATE
+USING (bucket_id = 'g2b' AND auth.role() = 'authenticated');
+
+-- Allow authenticated users to delete
+CREATE POLICY "Authenticated Delete for g2b"
+ON storage.objects FOR DELETE
+USING (bucket_id = 'g2b' AND auth.role() = 'authenticated');
+```
+
+### Bước 3: Kiểm tra field `images` trong bảng `products`
+
+Chạy SQL này để verify:
+```sql
+-- Check if images column exists
+SELECT column_name, data_type, column_default 
+FROM information_schema.columns 
+WHERE table_name = 'products' AND column_name = 'images';
+
+-- If column doesn't exist, add it:
+ALTER TABLE public.products 
+ADD COLUMN IF NOT EXISTS images TEXT[] DEFAULT '{}';
+```
+
+### Bước 4: Verify Setup
+
+Mở Console (F12) khi upload PDF, bạn sẽ thấy logs như:
+```
+🔄 ConvertAPI: Converting PDF "product.pdf" (500 KB) from page 2...
+🌐 ConvertAPI: Calling API...
+✅ ConvertAPI response: {...}
+✅ ConvertAPI: Converted 3 pages successfully
+📤 Uploading 3 images to Supabase bucket 'g2b/products/BIL_001'...
+✅ Uploaded page 2: https://xxx.supabase.co/storage/v1/object/public/g2b/...
+```
+
+### Troubleshooting Storage
+
+#### Lỗi: "Bucket not found" hoặc "The resource was not found"
+→ **Bucket chưa được tạo!** Vào Storage trong Dashboard và tạo bucket `g2b`
+
+#### Lỗi: "new row violates RLS policy" 
+→ Chạy lại SQL policies ở Bước 2
+
+#### Lỗi: ConvertAPI "401 Unauthorized"
+→ Kiểm tra VITE_CONVERT_API_SECRET trong file .env
+→ Đăng ký tài khoản mới tại https://www.convertapi.com/a/auth
+
+#### Lỗi: "Failed to fetch" khi download từ ConvertAPI
+→ CORS issue - ConvertAPI URLs chỉ valid trong thời gian ngắn
+
+#### Images không hiển thị sau khi import
+1. Kiểm tra bucket `g2b` có tồn tại trong Storage
+2. Kiểm tra bucket có được set public
+3. Kiểm tra URL trong console log có đúng format không

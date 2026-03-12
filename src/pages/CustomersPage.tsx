@@ -212,12 +212,12 @@ const CustomersPage = () => {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Khách hàng</h1>
-          <p className="text-muted-foreground">Quản lý danh sách khách hàng</p>
+          <h1 className="text-2xl font-bold">Customers</h1>
+          <p className="text-muted-foreground">Manage customer list</p>
         </div>
         <Button onClick={() => setIsCreateOpen(true)}>
           <Plus className="mr-2 h-4 w-4" />
-          Thêm khách hàng
+          Add Customer
         </Button>
       </div>
 
@@ -226,7 +226,7 @@ const CustomersPage = () => {
         <div className="relative flex-1 min-w-[200px]">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
-            placeholder="Tìm kiếm theo tên, email, công ty..."
+            placeholder="Search by name, email, company..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="pl-10"
@@ -237,20 +237,20 @@ const CustomersPage = () => {
           onChange={(e) => setFilterStatus(e.target.value)}
           className="w-[150px]"
         >
-          <option value="all">Tất cả trạng thái</option>
-          <option value="active">Đang hoạt động</option>
-          <option value="inactive">Ngừng hoạt động</option>
-          <option value="potential">Tiềm năng</option>
+          <option value="all">All Status</option>
+          <option value="active">Active</option>
+          <option value="inactive">Inactive</option>
+          <option value="potential">Potential</option>
         </Select>
         <Select
           value={filterType}
           onChange={(e) => setFilterType(e.target.value)}
           className="w-[150px]"
         >
-          <option value="all">Tất cả loại</option>
-          <option value="individual">Cá nhân</option>
-          <option value="company">Công ty</option>
-          <option value="agency">Đại lý</option>
+          <option value="all">All Types</option>
+          <option value="individual">Individual</option>
+          <option value="company">Company</option>
+          <option value="agency">Agency</option>
         </Select>
       </div>
 
@@ -262,7 +262,7 @@ const CustomersPage = () => {
               <Users className="h-5 w-5 text-primary" />
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">Tổng số</p>
+              <p className="text-sm text-muted-foreground">Total</p>
               <p className="text-2xl font-bold">{customers.length}</p>
             </div>
           </div>
@@ -273,7 +273,7 @@ const CustomersPage = () => {
               <User className="h-5 w-5 text-green-500" />
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">Đang hoạt động</p>
+              <p className="text-sm text-muted-foreground">Active</p>
               <p className="text-2xl font-bold">{customers.filter(c => c.status === 'active').length}</p>
             </div>
           </div>
@@ -284,7 +284,7 @@ const CustomersPage = () => {
               <User className="h-5 w-5 text-yellow-500" />
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">Tiềm năng</p>
+              <p className="text-sm text-muted-foreground">Potential</p>
               <p className="text-2xl font-bold">{customers.filter(c => c.status === 'potential').length}</p>
             </div>
           </div>
@@ -295,7 +295,7 @@ const CustomersPage = () => {
               <Building2 className="h-5 w-5 text-blue-500" />
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">Công ty</p>
+              <p className="text-sm text-muted-foreground">Companies</p>
               <p className="text-2xl font-bold">{customers.filter(c => c.customer_type === 'company').length}</p>
             </div>
           </div>
@@ -308,12 +308,12 @@ const CustomersPage = () => {
           <table className="w-full">
             <thead className="bg-muted/50">
               <tr>
-                <th className="px-4 py-3 text-left text-sm font-medium">Khách hàng</th>
-                <th className="px-4 py-3 text-left text-sm font-medium">Liên hệ</th>
-                <th className="px-4 py-3 text-left text-sm font-medium">Địa chỉ</th>
-                <th className="px-4 py-3 text-left text-sm font-medium">Loại</th>
-                <th className="px-4 py-3 text-left text-sm font-medium">Trạng thái</th>
-                <th className="px-4 py-3 text-right text-sm font-medium">Thao tác</th>
+                <th className="px-4 py-3 text-left text-sm font-medium">Customer</th>
+                <th className="px-4 py-3 text-left text-sm font-medium">Contact</th>
+                <th className="px-4 py-3 text-left text-sm font-medium">Address</th>
+                <th className="px-4 py-3 text-left text-sm font-medium">Type</th>
+                <th className="px-4 py-3 text-left text-sm font-medium">Status</th>
+                <th className="px-4 py-3 text-right text-sm font-medium">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
@@ -362,16 +362,16 @@ const CustomersPage = () => {
                   </td>
                   <td className="px-4 py-3">
                     <Badge variant={getTypeVariant(customer.customer_type)}>
-                      {customer.customer_type === 'individual' && 'Cá nhân'}
-                      {customer.customer_type === 'company' && 'Công ty'}
-                      {customer.customer_type === 'agency' && 'Đại lý'}
+                      {customer.customer_type === 'individual' && 'Individual'}
+                      {customer.customer_type === 'company' && 'Company'}
+                      {customer.customer_type === 'agency' && 'Agency'}
                     </Badge>
                   </td>
                   <td className="px-4 py-3">
                     <Badge variant={getStatusVariant(customer.status)}>
-                      {customer.status === 'active' && 'Hoạt động'}
-                      {customer.status === 'inactive' && 'Ngừng'}
-                      {customer.status === 'potential' && 'Tiềm năng'}
+                      {customer.status === 'active' && 'Active'}
+                      {customer.status === 'inactive' && 'Inactive'}
+                      {customer.status === 'potential' && 'Potential'}
                     </Badge>
                   </td>
                   <td className="px-4 py-3">
@@ -404,7 +404,7 @@ const CustomersPage = () => {
         {filteredCustomers.length === 0 && (
           <div className="py-12 text-center">
             <Users className="mx-auto h-12 w-12 text-muted-foreground/50" />
-            <p className="mt-4 text-muted-foreground">Không tìm thấy khách hàng nào</p>
+            <p className="mt-4 text-muted-foreground">No customers found</p>
           </div>
         )}
       </div>
@@ -424,18 +424,18 @@ const CustomersPage = () => {
         }}>
           <DialogHeader>
             <DialogTitle>
-              {isEditOpen ? 'Chỉnh sửa khách hàng' : 'Thêm khách hàng mới'}
+              {isEditOpen ? 'Edit Customer' : 'Add New Customer'}
             </DialogTitle>
           </DialogHeader>
 
           <div className="grid grid-cols-2 gap-4 py-4">
             <div className="col-span-2">
-              <Label htmlFor="name">Tên khách hàng *</Label>
+              <Label htmlFor="name">Customer Name *</Label>
               <Input
                 id="name"
                 value={formData.name}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                placeholder="Nhập tên khách hàng"
+                placeholder="Enter customer name"
                 className="mt-1"
               />
             </div>
@@ -453,7 +453,7 @@ const CustomersPage = () => {
             </div>
 
             <div>
-              <Label htmlFor="phone">Số điện thoại</Label>
+              <Label htmlFor="phone">Phone</Label>
               <Input
                 id="phone"
                 value={formData.phone}
@@ -464,106 +464,106 @@ const CustomersPage = () => {
             </div>
 
             <div>
-              <Label htmlFor="company">Công ty</Label>
+              <Label htmlFor="company">Company</Label>
               <Input
                 id="company"
                 value={formData.company}
                 onChange={(e) => setFormData({ ...formData, company: e.target.value })}
-                placeholder="Tên công ty"
+                placeholder="Company name"
                 className="mt-1"
               />
             </div>
 
             <div>
-              <Label htmlFor="tax_code">Mã số thuế</Label>
+              <Label htmlFor="tax_code">Tax Code</Label>
               <Input
                 id="tax_code"
                 value={formData.tax_code}
                 onChange={(e) => setFormData({ ...formData, tax_code: e.target.value })}
-                placeholder="Mã số thuế"
+                placeholder="Tax code"
                 className="mt-1"
               />
             </div>
 
             <div>
-              <Label htmlFor="contact_person">Người liên hệ</Label>
+              <Label htmlFor="contact_person">Contact Person</Label>
               <Input
                 id="contact_person"
                 value={formData.contact_person}
                 onChange={(e) => setFormData({ ...formData, contact_person: e.target.value })}
-                placeholder="Tên người liên hệ"
+                placeholder="Contact person name"
                 className="mt-1"
               />
             </div>
 
             <div>
-              <Label htmlFor="contact_phone">SĐT người liên hệ</Label>
+              <Label htmlFor="contact_phone">Contact Phone</Label>
               <Input
                 id="contact_phone"
                 value={formData.contact_phone}
                 onChange={(e) => setFormData({ ...formData, contact_phone: e.target.value })}
-                placeholder="SĐT người liên hệ"
+                placeholder="Contact phone number"
                 className="mt-1"
               />
             </div>
 
             <div className="col-span-2">
-              <Label htmlFor="address">Địa chỉ</Label>
+              <Label htmlFor="address">Address</Label>
               <Input
                 id="address"
                 value={formData.address}
                 onChange={(e) => setFormData({ ...formData, address: e.target.value })}
-                placeholder="Địa chỉ"
+                placeholder="Address"
                 className="mt-1"
               />
             </div>
 
             <div>
-              <Label htmlFor="city">Thành phố</Label>
+              <Label htmlFor="city">City</Label>
               <Input
                 id="city"
                 value={formData.city}
                 onChange={(e) => setFormData({ ...formData, city: e.target.value })}
-                placeholder="Thành phố"
+                placeholder="City"
                 className="mt-1"
               />
             </div>
 
             <div>
-              <Label htmlFor="customer_type">Loại khách hàng</Label>
+              <Label htmlFor="customer_type">Customer Type</Label>
               <Select
                 id="customer_type"
                 value={formData.customer_type}
                 onChange={(e) => setFormData({ ...formData, customer_type: e.target.value as CreateCustomerParams['customer_type'] })}
                 className="mt-1"
               >
-                <option value="individual">Cá nhân</option>
-                <option value="company">Công ty</option>
-                <option value="agency">Đại lý</option>
+                <option value="individual">Individual</option>
+                <option value="company">Company</option>
+                <option value="agency">Agency</option>
               </Select>
             </div>
 
             <div>
-              <Label htmlFor="status">Trạng thái</Label>
+              <Label htmlFor="status">Status</Label>
               <Select
                 id="status"
                 value={formData.status}
                 onChange={(e) => setFormData({ ...formData, status: e.target.value as CreateCustomerParams['status'] })}
                 className="mt-1"
               >
-                <option value="active">Đang hoạt động</option>
-                <option value="inactive">Ngừng hoạt động</option>
-                <option value="potential">Tiềm năng</option>
+                <option value="active">Active</option>
+                <option value="inactive">Inactive</option>
+                <option value="potential">Potential</option>
               </Select>
             </div>
 
             <div className="col-span-2">
-              <Label htmlFor="notes">Ghi chú</Label>
+              <Label htmlFor="notes">Notes</Label>
               <Textarea
                 id="notes"
                 value={formData.notes}
                 onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
-                placeholder="Ghi chú về khách hàng..."
+                placeholder="Notes about customer..."
                 className="mt-1"
                 rows={3}
               />
@@ -579,14 +579,14 @@ const CustomersPage = () => {
                 resetForm()
               }}
             >
-              Hủy
+              Cancel
             </Button>
             <Button
               onClick={isEditOpen ? handleUpdate : handleCreate}
               disabled={!formData.name || isSubmitting}
             >
               {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              {isEditOpen ? 'Cập nhật' : 'Tạo mới'}
+              {isEditOpen ? 'Update' : 'Create'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -596,19 +596,19 @@ const CustomersPage = () => {
       <Dialog open={isDeleteOpen} onOpenChange={setIsDeleteOpen}>
         <DialogContent onClose={() => setIsDeleteOpen(false)}>
           <DialogHeader>
-            <DialogTitle>Xác nhận xóa</DialogTitle>
+            <DialogTitle>Confirm Delete</DialogTitle>
           </DialogHeader>
           <p className="text-muted-foreground">
-            Bạn có chắc chắn muốn xóa khách hàng <strong>{selectedCustomer?.name}</strong>? 
-            Hành động này không thể hoàn tác.
+            Are you sure you want to delete customer <strong>{selectedCustomer?.name}</strong>? 
+            This action cannot be undone.
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setIsDeleteOpen(false)}>
-              Hủy
+              Cancel
             </Button>
             <Button variant="destructive" onClick={handleDelete} disabled={isSubmitting}>
               {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Xóa
+              Delete
             </Button>
           </DialogFooter>
         </DialogContent>

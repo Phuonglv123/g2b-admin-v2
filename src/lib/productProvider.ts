@@ -280,25 +280,25 @@ export function formatCurrency(amount: number, currency: string = 'VND'): string
  */
 export function getProductStatusLabel(status: number): string {
   const labels: Record<number, string> = {
-    0: 'Không hoạt động',
-    1: 'Đang hoạt động',
-    2: 'Bảo trì'
+    0: 'Inactive',
+    1: 'Active',
+    2: 'Maintenance'
   }
-  return labels[status] || 'Không xác định'
+  return labels[status] || 'Unknown'
 }
 
 /**
- * Get type label in Vietnamese
+ * Get type label
  */
 export function getProductTypeLabel(type: string): string {
   const labels: Record<string, string> = {
-    billboard: 'Biển quảng cáo',
-    digital: 'Màn hình kỹ thuật số',
-    led: 'Màn hình LED',
-    transit: 'Quảng cáo di động',
+    billboard: 'Billboard',
+    digital: 'Digital Screen',
+    led: 'LED Screen',
+    transit: 'Transit Advertising',
     poster: 'Poster',
     banner: 'Banner',
-    other: 'Khác'
+    other: 'Other'
   }
   return labels[type] || type
 }

@@ -51,6 +51,8 @@ import { getProviders, findOrCreateProvider } from '@/lib/customerProvider'
 import { useAuth } from '@/contexts/AuthContext'
 import { PDFUploadExtractor } from '@/components/inventory'
 import { convertAndUploadPdfImages } from '@/lib/convertApiService'
+import { supabase } from '@/lib/supabase'
+import { matchImagesByPagePosition } from '@/lib/geminiService'
 import type { ExtractedPDFData, ExtractedProductData } from '@/lib/geminiService'
 import type {
   ProductWithRelations,
@@ -311,55 +313,123 @@ const InventoryPage = () => {
       setIsSubmitting(true)
       setAiError(null)
 
+      console.log('🚀 Starting AI extraction process...')
+      console.log('📄 File:', file.name, file.type, `(${(file.size / 1024).toFixed(1)} KB)`)
+      console.log('📦 Provider:', data.provider_name)
+      console.log('📦 Products found:', data.products.length)
+
       // 1. Find or create provider from the PDF
       const provider = await findOrCreateProvider(data.provider_name, user.id)
+      console.log('✅ Provider ready:', provider.name, provider.id)
       
       // Refresh providers list
       const updatedProviders = await getProviders()
       setProviders(updatedProviders)
 
-      // 2. Extract images from PDF using ConvertAPI (skip first page which is provider info)
-      let extractedImageUrls: string[] = []
+      // 2. Extract images from PDF using ConvertAPI
+      let imageUrls: string[] = []
       if (file.type === 'application/pdf') {
         try {
-          console.log('Converting PDF to images using ConvertAPI...')
+          console.log('🖼️ Converting PDF to images...')
           // Use first product code for folder naming
           const firstProductCode = data.products[0]?.product_code || await generateProductCode(data.products[0]?.type || 'billboard')
-          extractedImageUrls = await convertAndUploadPdfImages(file, firstProductCode, 2)
-          console.log(`Converted and uploaded ${extractedImageUrls.length} images`)
+          const uploadResult = await convertAndUploadPdfImages(file, firstProductCode, 1) // Start from page 1 to get all images
+          imageUrls = uploadResult.imageUrls
+          console.log(`✅ Converted and uploaded ${imageUrls.length} images`)
         } catch (imgError) {
-          console.error('Error converting PDF images:', imgError)
-          // Continue without images
+          console.error('❌ Error converting PDF images:', imgError)
+          setAiError(`Note: Could not extract images from PDF. ${imgError instanceof Error ? imgError.message : ''}`)
+        }
+      } else if (file.type.startsWith('image/')) {
+        // If it's an image file, upload it directly
+        console.log('🖼️ Uploading image file directly...')
+        try {
+          const firstProductCode = data.products[0]?.product_code || await generateProductCode(data.products[0]?.type || 'billboard')
+          const folderName = `products/${firstProductCode.replace(/[^a-zA-Z0-9-_]/g, '_')}`
+          const timestamp = Date.now()
+          const fileName = `${folderName}/${timestamp}_original.${file.name.split('.').pop()}`
+          
+          const { error } = await supabase.storage
+            .from('g2b')
+            .upload(fileName, file, {
+              contentType: file.type,
+              cacheControl: '3600',
+              upsert: true,
+            })
+          
+          if (!error) {
+            const { data: urlData } = supabase.storage
+              .from('g2b')
+              .getPublicUrl(fileName)
+            
+            if (urlData?.publicUrl) {
+              imageUrls = [urlData.publicUrl]
+              console.log('✅ Image uploaded:', urlData.publicUrl)
+            }
+          } else {
+            console.error('❌ Failed to upload image:', error)
+          }
+        } catch (imgError) {
+          console.error('❌ Error uploading image:', imgError)
         }
       }
 
-      // 3. Process each product with shared images
-      for (const productData of data.products) {
-        await processExtractedProduct(productData, provider.id, extractedImageUrls)
+      // 3. Match images to products by page position
+      // PDF Structure: Page 1 = Provider, then each product = 1 info page + 3 image pages
+      let productImageMap: Map<string, string[]> = new Map()
+      
+      if (imageUrls.length > 0 && data.products.length >= 1) {
+        // Use page position-based matching (not AI)
+        // Page 1 = Provider info (index 0)
+        // Page 2 = Product 1 info (index 1)
+        // Page 3, 4, 5 = Product 1 images (index 2, 3, 4)
+        // Page 6 = Product 2 info (index 5)
+        // Page 7, 8, 9 = Product 2 images (index 6, 7, 8)
+        // etc.
+        console.log('📍 Matching images by page position...')
+        productImageMap = matchImagesByPagePosition(imageUrls, data.products, 3)
+        console.log('✅ Image matching by position complete')
       }
 
-      // 4. Refresh products list
+      // 4. Process each product with matched images
+      console.log(`📝 Processing ${data.products.length} products...`)
+      for (let i = 0; i < data.products.length; i++) {
+        const productData = data.products[i]
+        const productImages = productImageMap.get(productData.product_name) || []
+        console.log(`📝 Processing product ${i + 1}/${data.products.length}: ${productData.product_name} (${productImages.length} images)`)
+        await processExtractedProduct(productData, provider.id, productImages)
+      }
+
+      // 5. Refresh products list
       await fetchData()
 
-      // 5. Close dialog and show success
+      // 6. Close dialog and show success
       setIsAIUploadOpen(false)
       
       // Show result message
       const productCount = data.products.length
-      const message = `Đã nhập ${productCount} sản phẩm từ nhà cung cấp "${data.provider_name}" với ${extractedImageUrls.length} hình ảnh`
+      const totalImages = Array.from(productImageMap.values()).reduce((sum, imgs) => sum + imgs.length, 0)
+      const message = `✅ Imported ${productCount} products from provider "${data.provider_name}" with ${totalImages} images matched`
       console.log(message)
-      // You could add a toast notification here
+      // Clear any warning error after success
+      if (imageUrls.length > 0) {
+        setAiError(null)
+      }
       
     } catch (error) {
-      console.error('Error processing AI extraction:', error)
-      setAiError(error instanceof Error ? error.message : 'Lỗi không xác định')
+      console.error('❌ Error processing AI extraction:', error)
+      setAiError(error instanceof Error ? error.message : 'Unknown error')
     } finally {
       setIsSubmitting(false)
     }
   }
 
   // Process a single extracted product
-  const processExtractedProduct = async (data: ExtractedProductData, providerId: string, images: string[] = []) => {
+  const processExtractedProduct = async (
+    data: ExtractedProductData, 
+    providerId: string, 
+    images: string[] = []
+  ) => {
     if (!user) return
 
     // Use product_code from AI if available, otherwise generate new one
@@ -400,7 +470,7 @@ const InventoryPage = () => {
     // Build description from extracted data if not provided
     let description = data.description || ''
     if (!description && data.location.landmark) {
-      description = `Hướng nhìn: ${data.location.landmark}`
+      description = `View: ${data.location.landmark}`
     }
 
     // Create product with extracted images
@@ -442,17 +512,17 @@ const InventoryPage = () => {
       {/* Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Quản lý sản phẩm</h1>
-          <p className="text-muted-foreground">Quản lý tất cả các vị trí quảng cáo</p>
+          <h1 className="text-2xl font-bold">Product Management</h1>
+          <p className="text-muted-foreground">Manage all advertising locations</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => setIsAIUploadOpen(true)}>
             <Sparkles className="mr-2 h-4 w-4" />
-            Nhập bằng AI
+            Import with AI
           </Button>
           <Button onClick={openCreateDialog}>
             <Plus className="mr-2 h-4 w-4" />
-            Thêm sản phẩm
+            Add Product
           </Button>
         </div>
       </div>
@@ -465,7 +535,7 @@ const InventoryPage = () => {
               <Package className="h-5 w-5 text-primary" />
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">Tổng sản phẩm</p>
+              <p className="text-sm text-muted-foreground">Total Products</p>
               <p className="text-2xl font-bold">{stats?.total || 0}</p>
             </div>
           </div>
@@ -476,7 +546,7 @@ const InventoryPage = () => {
               <Package className="h-5 w-5 text-green-500" />
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">Đang hoạt động</p>
+              <p className="text-sm text-muted-foreground">Active</p>
               <p className="text-2xl font-bold">{stats?.active || 0}</p>
             </div>
           </div>
@@ -487,7 +557,7 @@ const InventoryPage = () => {
               <Package className="h-5 w-5 text-yellow-500" />
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">Bảo trì</p>
+              <p className="text-sm text-muted-foreground">Maintenance</p>
               <p className="text-2xl font-bold">{stats?.maintenance || 0}</p>
             </div>
           </div>
@@ -498,7 +568,7 @@ const InventoryPage = () => {
               <Package className="h-5 w-5 text-red-500" />
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">Không hoạt động</p>
+              <p className="text-sm text-muted-foreground">Inactive</p>
               <p className="text-2xl font-bold">{stats?.inactive || 0}</p>
             </div>
           </div>
@@ -510,7 +580,7 @@ const InventoryPage = () => {
         <div className="relative flex-1 min-w-[200px]">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
-            placeholder="Tìm theo tên, mã sản phẩm..."
+            placeholder="Search by name, product code..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="pl-10"
@@ -521,31 +591,31 @@ const InventoryPage = () => {
           onChange={(e) => setFilterType(e.target.value)}
           className="w-[150px]"
         >
-          <option value="all">Tất cả loại</option>
-          <option value="billboard">Biển QC</option>
-          <option value="digital">Màn hình số</option>
+          <option value="all">All Types</option>
+          <option value="billboard">Billboard</option>
+          <option value="digital">Digital Screen</option>
           <option value="led">LED</option>
-          <option value="transit">Di động</option>
+          <option value="transit">Transit</option>
           <option value="poster">Poster</option>
           <option value="banner">Banner</option>
-          <option value="other">Khác</option>
+          <option value="other">Other</option>
         </Select>
         <Select
           value={filterStatus}
           onChange={(e) => setFilterStatus(e.target.value)}
           className="w-[150px]"
         >
-          <option value="all">Tất cả trạng thái</option>
-          <option value="1">Đang hoạt động</option>
-          <option value="0">Không hoạt động</option>
-          <option value="2">Bảo trì</option>
+          <option value="all">All Status</option>
+          <option value="1">Active</option>
+          <option value="0">Inactive</option>
+          <option value="2">Maintenance</option>
         </Select>
         <Select
           value={filterCity}
           onChange={(e) => setFilterCity(e.target.value)}
           className="w-[150px]"
         >
-          <option value="all">Tất cả thành phố</option>
+          <option value="all">All Cities</option>
           {cities.map((city) => (
             <option key={city} value={city}>
               {city}
@@ -560,29 +630,52 @@ const InventoryPage = () => {
           <table className="w-full">
             <thead className="bg-muted/50">
               <tr>
-                <th className="px-4 py-3 text-left text-sm font-medium">Sản phẩm</th>
-                <th className="px-4 py-3 text-left text-sm font-medium">Vị trí</th>
-                <th className="px-4 py-3 text-left text-sm font-medium">Loại</th>
-                <th className="px-4 py-3 text-left text-sm font-medium">Kích thước</th>
-                <th className="px-4 py-3 text-left text-sm font-medium">Giá</th>
-                <th className="px-4 py-3 text-left text-sm font-medium">Nhà cung cấp</th>
-                <th className="px-4 py-3 text-left text-sm font-medium">Trạng thái</th>
-                <th className="px-4 py-3 text-right text-sm font-medium">Thao tác</th>
+                <th className="px-4 py-3 text-left text-sm font-medium">Product</th>
+                <th className="px-4 py-3 text-left text-sm font-medium">Location</th>
+                <th className="px-4 py-3 text-left text-sm font-medium">Type</th>
+                <th className="px-4 py-3 text-left text-sm font-medium">Size</th>
+                <th className="px-4 py-3 text-left text-sm font-medium">Price</th>
+                <th className="px-4 py-3 text-left text-sm font-medium">Provider</th>
+                <th className="px-4 py-3 text-left text-sm font-medium">Status</th>
+                <th className="px-4 py-3 text-right text-sm font-medium">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
               {paginatedProducts.map((product) => {
                 const TypeIcon = typeIcons[product.type] || Package
+                const hasImages = product.images && product.images.length > 0
                 return (
                   <tr key={product.id} className="hover:bg-muted/30 transition-colors">
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-3">
-                        <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
-                          <TypeIcon className="h-5 w-5 text-primary" />
-                        </div>
+                        {/* Product Image or Icon */}
+                        {hasImages ? (
+                          <div className="h-12 w-12 rounded-lg overflow-hidden bg-muted flex-shrink-0">
+                            <img
+                              src={product.images[0]}
+                              alt={product.product_name}
+                              className="h-full w-full object-cover"
+                              onError={(e) => {
+                                // Fallback to icon if image fails to load
+                                e.currentTarget.style.display = 'none'
+                                e.currentTarget.parentElement!.innerHTML = `<div class="h-full w-full flex items-center justify-center bg-primary/10"><svg class="h-5 w-5 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg></div>`
+                              }}
+                            />
+                          </div>
+                        ) : (
+                          <div className="h-12 w-12 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
+                            <TypeIcon className="h-5 w-5 text-primary" />
+                          </div>
+                        )}
                         <div>
                           <p className="font-medium">{product.product_name}</p>
                           <p className="text-xs text-muted-foreground">{product.product_code}</p>
+                          {hasImages && (
+                            <p className="text-xs text-muted-foreground">
+                              <ImageIcon className="inline h-3 w-3 mr-1" />
+                              {product.images.length} images
+                            </p>
+                          )}
                         </div>
                       </div>
                     </td>
@@ -651,7 +744,7 @@ const InventoryPage = () => {
         {filteredProducts.length === 0 && (
           <div className="py-12 text-center">
             <Package className="mx-auto h-12 w-12 text-muted-foreground/50" />
-            <p className="mt-4 text-muted-foreground">Không tìm thấy sản phẩm nào</p>
+            <p className="mt-4 text-muted-foreground">No products found</p>
           </div>
         )}
 
@@ -659,9 +752,9 @@ const InventoryPage = () => {
         {totalPages > 1 && (
           <div className="flex items-center justify-between border-t border-border px-4 py-3">
             <p className="text-sm text-muted-foreground">
-              Hiển thị {(currentPage - 1) * itemsPerPage + 1} -{' '}
-              {Math.min(currentPage * itemsPerPage, filteredProducts.length)} của{' '}
-              {filteredProducts.length} sản phẩm
+              Showing {(currentPage - 1) * itemsPerPage + 1} -{' '}
+              {Math.min(currentPage * itemsPerPage, filteredProducts.length)} of{' '}
+              {filteredProducts.length} products
             </p>
             <div className="flex items-center gap-2">
               <Button
@@ -673,7 +766,7 @@ const InventoryPage = () => {
                 <ChevronLeft className="h-4 w-4" />
               </Button>
               <span className="text-sm">
-                Trang {currentPage} / {totalPages}
+                Page {currentPage} / {totalPages}
               </span>
               <Button
                 variant="outline"
@@ -695,26 +788,26 @@ const InventoryPage = () => {
           onClose={() => setIsViewOpen(false)}
         >
           <DialogHeader>
-            <DialogTitle>Chi tiết sản phẩm</DialogTitle>
+            <DialogTitle>Product Details</DialogTitle>
           </DialogHeader>
           {selectedProduct && (
             <div className="space-y-6">
               {/* Basic Info */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <Label className="text-muted-foreground">Mã sản phẩm</Label>
+                  <Label className="text-muted-foreground">Product Code</Label>
                   <p className="font-medium">{selectedProduct.product_code}</p>
                 </div>
                 <div>
-                  <Label className="text-muted-foreground">Tên sản phẩm</Label>
+                  <Label className="text-muted-foreground">Product Name</Label>
                   <p className="font-medium">{selectedProduct.product_name}</p>
                 </div>
                 <div>
-                  <Label className="text-muted-foreground">Loại</Label>
+                  <Label className="text-muted-foreground">Type</Label>
                   <p className="font-medium">{getProductTypeLabel(selectedProduct.type)}</p>
                 </div>
                 <div>
-                  <Label className="text-muted-foreground">Trạng thái</Label>
+                  <Label className="text-muted-foreground">Status</Label>
                   <Badge
                     variant={
                       selectedProduct.status === 1
@@ -734,7 +827,7 @@ const InventoryPage = () => {
                 <div className="rounded-lg border border-border p-4">
                   <div className="flex items-center gap-2 mb-2">
                     <MapPin className="h-4 w-4 text-primary" />
-                    <Label className="font-medium">Vị trí</Label>
+                    <Label className="font-medium">Location</Label>
                   </div>
                   <p>{selectedProduct.location_name}</p>
                   <p className="text-sm text-muted-foreground">{selectedProduct.location_address}</p>
@@ -743,7 +836,7 @@ const InventoryPage = () => {
                 <div className="rounded-lg border border-border p-4">
                   <div className="flex items-center gap-2 mb-2">
                     <Building2 className="h-4 w-4 text-primary" />
-                    <Label className="font-medium">Nhà cung cấp</Label>
+                    <Label className="font-medium">Provider</Label>
                   </div>
                   <p>{selectedProduct.provider_name}</p>
                   <p className="text-sm text-muted-foreground">{selectedProduct.provider_phone}</p>
@@ -754,21 +847,21 @@ const InventoryPage = () => {
               <div className="rounded-lg border border-border p-4">
                 <div className="flex items-center gap-2 mb-3">
                   <DollarSign className="h-4 w-4 text-primary" />
-                  <Label className="font-medium">Giá & Thời hạn</Label>
+                  <Label className="font-medium">Pricing & Duration</Label>
                 </div>
                 <div className="grid grid-cols-3 gap-4">
                   <div>
-                    <Label className="text-muted-foreground text-sm">Giá thuê</Label>
+                    <Label className="text-muted-foreground text-sm">Rental Price</Label>
                     <p className="font-bold text-lg">
                       {formatCurrency(selectedProduct.cost, selectedProduct.currency)}
                     </p>
                   </div>
                   <div>
-                    <Label className="text-muted-foreground text-sm">Thời hạn thuê</Label>
+                    <Label className="text-muted-foreground text-sm">Rental Duration</Label>
                     <p className="font-medium">{selectedProduct.booking_duration}</p>
                   </div>
                   <div>
-                    <Label className="text-muted-foreground text-sm">Lưu lượng</Label>
+                    <Label className="text-muted-foreground text-sm">Traffic</Label>
                     <p className="font-medium">{selectedProduct.traffic}</p>
                   </div>
                 </div>
@@ -778,57 +871,57 @@ const InventoryPage = () => {
               <div className="rounded-lg border border-border p-4">
                 <div className="flex items-center gap-2 mb-3">
                   <Maximize2 className="h-4 w-4 text-primary" />
-                  <Label className="font-medium">Thông số kỹ thuật</Label>
+                  <Label className="font-medium">Technical Specifications</Label>
                 </div>
                 <div className="grid grid-cols-3 gap-4 text-sm">
                   <div>
-                    <Label className="text-muted-foreground">Kích thước</Label>
+                    <Label className="text-muted-foreground">Size</Label>
                     <p>
                       {selectedProduct.attributes.width}m x {selectedProduct.attributes.height}m
                     </p>
                   </div>
                   <div>
-                    <Label className="text-muted-foreground">Độ phân giải</Label>
+                    <Label className="text-muted-foreground">Resolution</Label>
                     <p>
                       {selectedProduct.attributes.pixel_width} x{' '}
                       {selectedProduct.attributes.pixel_height} px
                     </p>
                   </div>
                   <div>
-                    <Label className="text-muted-foreground">Thời lượng video</Label>
+                    <Label className="text-muted-foreground">Video Duration</Label>
                     <p>{selectedProduct.attributes.video_duration}s</p>
                   </div>
                   <div>
-                    <Label className="text-muted-foreground">Thời gian hoạt động</Label>
+                    <Label className="text-muted-foreground">Operating Hours</Label>
                     <p>
                       {selectedProduct.attributes.opera_time_from} -{' '}
                       {selectedProduct.attributes.opera_time_to}
                     </p>
                   </div>
                   <div>
-                    <Label className="text-muted-foreground">Tần suất</Label>
+                    <Label className="text-muted-foreground">Frequency</Label>
                     <p>{selectedProduct.attributes.frequency}</p>
                   </div>
                   <div>
-                    <Label className="text-muted-foreground">Hình dạng</Label>
+                    <Label className="text-muted-foreground">Shape</Label>
                     <p>{selectedProduct.attributes.shape}</p>
                   </div>
                   <div>
-                    <Label className="text-muted-foreground">Số mặt</Label>
+                    <Label className="text-muted-foreground">Sides</Label>
                     <p>{selectedProduct.attributes.add_side}</p>
                   </div>
                   <div>
-                    <Label className="text-muted-foreground">Số lượng QC</Label>
+                    <Label className="text-muted-foreground">Ad Slots</Label>
                     <p>{selectedProduct.attributes.quantity_of_ad || 'N/A'}</p>
                   </div>
                   <div>
-                    <Label className="text-muted-foreground">Chiếu sáng</Label>
-                    <p>{selectedProduct.attributes.lighting === 1 ? 'Có' : 'Không'}</p>
+                    <Label className="text-muted-foreground">Lighting</Label>
+                    <p>{selectedProduct.attributes.lighting === 1 ? 'Yes' : 'No'}</p>
                   </div>
                 </div>
                 {selectedProduct.attributes.note && (
                   <div className="mt-3">
-                    <Label className="text-muted-foreground">Ghi chú</Label>
+                    <Label className="text-muted-foreground">Notes</Label>
                     <p className="text-sm">{selectedProduct.attributes.note}</p>
                   </div>
                 )}
@@ -837,15 +930,59 @@ const InventoryPage = () => {
               {/* Description */}
               {selectedProduct.description && (
                 <div>
-                  <Label className="text-muted-foreground">Mô tả</Label>
+                  <Label className="text-muted-foreground">Description</Label>
                   <p className="mt-1">{selectedProduct.description}</p>
+                </div>
+              )}
+
+              {/* Product Images */}
+              {selectedProduct.images && selectedProduct.images.length > 0 && (
+                <div className="rounded-lg border border-border p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <ImageIcon className="h-4 w-4 text-primary" />
+                    <Label className="font-medium">Product Images ({selectedProduct.images.length})</Label>
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                    {selectedProduct.images.map((imageUrl, index) => (
+                      <div 
+                        key={index} 
+                        className="relative aspect-video rounded-lg overflow-hidden bg-muted group cursor-pointer"
+                        onClick={() => window.open(imageUrl, '_blank')}
+                      >
+                        <img
+                          src={imageUrl}
+                          alt={`${selectedProduct.product_name} - Image ${index + 1}`}
+                          className="h-full w-full object-cover transition-transform group-hover:scale-105"
+                          onError={(e) => {
+                            e.currentTarget.src = ''
+                            e.currentTarget.parentElement!.innerHTML = `
+                              <div class="h-full w-full flex flex-col items-center justify-center text-muted-foreground">
+                                <svg class="h-8 w-8 mb-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                  <rect x="3" y="3" width="18" height="18" rx="2"/>
+                                  <circle cx="8.5" cy="8.5" r="1.5"/>
+                                  <path d="m21 15-5-5L5 21"/>
+                                </svg>
+                                <span class="text-xs">Failed to load image</span>
+                              </div>
+                            `
+                          }}
+                        />
+                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
+                          <Eye className="h-6 w-6 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </div>
+                        <div className="absolute bottom-1 right-1 bg-black/50 text-white text-xs px-2 py-0.5 rounded">
+                          {index + 1}/{selectedProduct.images.length}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setIsViewOpen(false)}>
-              Đóng
+              Close
             </Button>
             <Button
               onClick={() => {
@@ -854,7 +991,7 @@ const InventoryPage = () => {
               }}
             >
               <Edit className="mr-2 h-4 w-4" />
-              Chỉnh sửa
+              Edit
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -880,7 +1017,7 @@ const InventoryPage = () => {
           }}
         >
           <DialogHeader>
-            <DialogTitle>{isEditOpen ? 'Chỉnh sửa sản phẩm' : 'Thêm sản phẩm mới'}</DialogTitle>
+            <DialogTitle>{isEditOpen ? 'Edit Product' : 'Add New Product'}</DialogTitle>
           </DialogHeader>
 
           <div className="space-y-6 py-4">
@@ -888,11 +1025,11 @@ const InventoryPage = () => {
             <div className="space-y-4">
               <h3 className="font-medium flex items-center gap-2">
                 <Package className="h-4 w-4" />
-                Thông tin cơ bản
+                Basic Information
               </h3>
               <div className="grid grid-cols-3 gap-4">
                 <div>
-                  <Label htmlFor="product_code">Mã sản phẩm *</Label>
+                  <Label htmlFor="product_code">Product Code *</Label>
                   <Input
                     id="product_code"
                     value={formData.product_code}
@@ -902,34 +1039,34 @@ const InventoryPage = () => {
                   />
                 </div>
                 <div className="col-span-2">
-                  <Label htmlFor="product_name">Tên sản phẩm *</Label>
+                  <Label htmlFor="product_name">Product Name *</Label>
                   <Input
                     id="product_name"
                     value={formData.product_name}
                     onChange={(e) => setFormData({ ...formData, product_name: e.target.value })}
-                    placeholder="Nhập tên sản phẩm"
+                    placeholder="Enter product name"
                     className="mt-1"
                   />
                 </div>
                 <div>
-                  <Label htmlFor="type">Loại sản phẩm *</Label>
+                  <Label htmlFor="type">Product Type *</Label>
                   <Select
                     id="type"
                     value={formData.type}
                     onChange={(e) => handleTypeChange(e.target.value as ProductType)}
                     className="mt-1"
                   >
-                    <option value="billboard">Biển quảng cáo</option>
-                    <option value="digital">Màn hình kỹ thuật số</option>
-                    <option value="led">Màn hình LED</option>
-                    <option value="transit">Quảng cáo di động</option>
+                    <option value="billboard">Billboard</option>
+                    <option value="digital">Digital Screen</option>
+                    <option value="led">LED Screen</option>
+                    <option value="transit">Transit Advertising</option>
                     <option value="poster">Poster</option>
                     <option value="banner">Banner</option>
-                    <option value="other">Khác</option>
+                    <option value="other">Other</option>
                   </Select>
                 </div>
                 <div>
-                  <Label htmlFor="status">Trạng thái *</Label>
+                  <Label htmlFor="status">Status *</Label>
                   <Select
                     id="status"
                     value={String(formData.status)}
@@ -938,13 +1075,13 @@ const InventoryPage = () => {
                     }
                     className="mt-1"
                   >
-                    <option value="1">Đang hoạt động</option>
-                    <option value="0">Không hoạt động</option>
-                    <option value="2">Bảo trì</option>
+                    <option value="1">Active</option>
+                    <option value="0">Inactive</option>
+                    <option value="2">Maintenance</option>
                   </Select>
                 </div>
                 <div>
-                  <Label htmlFor="areas">Khu vực</Label>
+                  <Label htmlFor="areas">Areas</Label>
                   <Input
                     id="areas"
                     value={formData.areas?.join(', ')}
@@ -954,7 +1091,7 @@ const InventoryPage = () => {
                         areas: e.target.value.split(',').map((s) => s.trim()),
                       })
                     }
-                    placeholder="Nhập khu vực, cách nhau bằng dấu phẩy"
+                    placeholder="Enter areas, separated by comma"
                     className="mt-1"
                   />
                 </div>
@@ -965,18 +1102,18 @@ const InventoryPage = () => {
             <div className="space-y-4">
               <h3 className="font-medium flex items-center gap-2">
                 <MapPin className="h-4 w-4" />
-                Vị trí & Nhà cung cấp
+                Location & Provider
               </h3>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <Label htmlFor="location_id">Vị trí *</Label>
+                  <Label htmlFor="location_id">Location *</Label>
                   <Select
                     id="location_id"
                     value={formData.location_id}
                     onChange={(e) => setFormData({ ...formData, location_id: e.target.value })}
                     className="mt-1"
                   >
-                    <option value="">Chọn vị trí</option>
+                    <option value="">Select location</option>
                     {locations.map((loc) => (
                       <option key={loc.id} value={loc.id}>
                         {loc.name} - {loc.city}
@@ -985,14 +1122,14 @@ const InventoryPage = () => {
                   </Select>
                 </div>
                 <div>
-                  <Label htmlFor="provider_id">Nhà cung cấp *</Label>
+                  <Label htmlFor="provider_id">Provider *</Label>
                   <Select
                     id="provider_id"
                     value={formData.provider_id}
                     onChange={(e) => setFormData({ ...formData, provider_id: e.target.value })}
                     className="mt-1"
                   >
-                    <option value="">Chọn nhà cung cấp</option>
+                    <option value="">Select provider</option>
                     {providers.map((provider) => (
                       <option key={provider.id} value={provider.id}>
                         {provider.name}
@@ -1007,11 +1144,11 @@ const InventoryPage = () => {
             <div className="space-y-4">
               <h3 className="font-medium flex items-center gap-2">
                 <DollarSign className="h-4 w-4" />
-                Giá & Thời hạn
+                Pricing & Duration
               </h3>
               <div className="grid grid-cols-4 gap-4">
                 <div>
-                  <Label htmlFor="cost">Giá thuê *</Label>
+                  <Label htmlFor="cost">Rental Price *</Label>
                   <Input
                     id="cost"
                     type="number"
@@ -1022,7 +1159,7 @@ const InventoryPage = () => {
                   />
                 </div>
                 <div>
-                  <Label htmlFor="currency">Tiền tệ</Label>
+                  <Label htmlFor="currency">Currency</Label>
                   <Select
                     id="currency"
                     value={formData.currency}
@@ -1034,32 +1171,32 @@ const InventoryPage = () => {
                   </Select>
                 </div>
                 <div>
-                  <Label htmlFor="booking_duration">Thời hạn thuê *</Label>
+                  <Label htmlFor="booking_duration">Rental Duration *</Label>
                   <Input
                     id="booking_duration"
                     value={formData.booking_duration}
                     onChange={(e) => setFormData({ ...formData, booking_duration: e.target.value })}
-                    placeholder="1 tháng, 3 tháng..."
+                    placeholder="1 month, 3 months..."
                     className="mt-1"
                   />
                 </div>
                 <div>
-                  <Label htmlFor="traffic">Lưu lượng *</Label>
+                  <Label htmlFor="traffic">Traffic *</Label>
                   <Input
                     id="traffic"
                     value={formData.traffic}
                     onChange={(e) => setFormData({ ...formData, traffic: e.target.value })}
-                    placeholder="10,000 lượt/ngày"
+                    placeholder="10,000 views/day"
                     className="mt-1"
                   />
                 </div>
                 <div className="col-span-2">
-                  <Label htmlFor="production_cost">Chi phí sản xuất</Label>
+                  <Label htmlFor="production_cost">Production Cost</Label>
                   <Input
                     id="production_cost"
                     value={formData.production_cost}
                     onChange={(e) => setFormData({ ...formData, production_cost: e.target.value })}
-                    placeholder="Mô tả chi phí sản xuất"
+                    placeholder="Production cost description"
                     className="mt-1"
                   />
                 </div>
@@ -1070,11 +1207,11 @@ const InventoryPage = () => {
             <div className="space-y-4">
               <h3 className="font-medium flex items-center gap-2">
                 <LayoutGrid className="h-4 w-4" />
-                Thông số kỹ thuật
+                Technical Specifications
               </h3>
               <div className="grid grid-cols-4 gap-4">
                 <div>
-                  <Label htmlFor="width">Chiều rộng (m) *</Label>
+                  <Label htmlFor="width">Width (m) *</Label>
                   <Input
                     id="width"
                     type="number"
@@ -1084,7 +1221,7 @@ const InventoryPage = () => {
                   />
                 </div>
                 <div>
-                  <Label htmlFor="height">Chiều cao (m) *</Label>
+                  <Label htmlFor="height">Height (m) *</Label>
                   <Input
                     id="height"
                     type="number"
@@ -1094,7 +1231,7 @@ const InventoryPage = () => {
                   />
                 </div>
                 <div>
-                  <Label htmlFor="pixel_width">Pixel rộng</Label>
+                  <Label htmlFor="pixel_width">Pixel Width</Label>
                   <Input
                     id="pixel_width"
                     type="number"
@@ -1104,7 +1241,7 @@ const InventoryPage = () => {
                   />
                 </div>
                 <div>
-                  <Label htmlFor="pixel_height">Pixel cao</Label>
+                  <Label htmlFor="pixel_height">Pixel Height</Label>
                   <Input
                     id="pixel_height"
                     type="number"
@@ -1114,7 +1251,7 @@ const InventoryPage = () => {
                   />
                 </div>
                 <div>
-                  <Label htmlFor="video_duration">Thời lượng video (s)</Label>
+                  <Label htmlFor="video_duration">Video Duration (s)</Label>
                   <Input
                     id="video_duration"
                     type="number"
@@ -1124,7 +1261,7 @@ const InventoryPage = () => {
                   />
                 </div>
                 <div>
-                  <Label htmlFor="opera_time_from">Từ giờ *</Label>
+                  <Label htmlFor="opera_time_from">From *</Label>
                   <Input
                     id="opera_time_from"
                     type="time"
@@ -1134,7 +1271,7 @@ const InventoryPage = () => {
                   />
                 </div>
                 <div>
-                  <Label htmlFor="opera_time_to">Đến giờ *</Label>
+                  <Label htmlFor="opera_time_to">To *</Label>
                   <Input
                     id="opera_time_to"
                     type="time"
@@ -1144,33 +1281,33 @@ const InventoryPage = () => {
                   />
                 </div>
                 <div>
-                  <Label htmlFor="frequency">Tần suất *</Label>
+                  <Label htmlFor="frequency">Frequency *</Label>
                   <Input
                     id="frequency"
                     value={formData.attributes?.frequency}
                     onChange={(e) => updateAttributes('frequency', e.target.value)}
-                    placeholder="10 lần/giờ"
+                    placeholder="10 times/hour"
                     className="mt-1"
                   />
                 </div>
                 <div>
-                  <Label htmlFor="shape">Hình dạng *</Label>
+                  <Label htmlFor="shape">Shape *</Label>
                   <Select
                     id="shape"
                     value={formData.attributes?.shape}
                     onChange={(e) => updateAttributes('shape', e.target.value)}
                     className="mt-1"
                   >
-                    <option value="rectangle">Hình chữ nhật</option>
-                    <option value="square">Hình vuông</option>
-                    <option value="vertical">Dọc</option>
-                    <option value="horizontal">Ngang</option>
-                    <option value="circular">Tròn</option>
-                    <option value="other">Khác</option>
+                    <option value="rectangle">Rectangle</option>
+                    <option value="square">Square</option>
+                    <option value="vertical">Vertical</option>
+                    <option value="horizontal">Horizontal</option>
+                    <option value="circular">Circular</option>
+                    <option value="other">Other</option>
                   </Select>
                 </div>
                 <div>
-                  <Label htmlFor="add_side">Số mặt *</Label>
+                  <Label htmlFor="add_side">Sides *</Label>
                   <Input
                     id="add_side"
                     type="number"
@@ -1181,7 +1318,7 @@ const InventoryPage = () => {
                   />
                 </div>
                 <div>
-                  <Label htmlFor="quantity_of_ad">Số lượng QC</Label>
+                  <Label htmlFor="quantity_of_ad">Ad Slots</Label>
                   <Input
                     id="quantity_of_ad"
                     type="number"
@@ -1191,25 +1328,25 @@ const InventoryPage = () => {
                   />
                 </div>
                 <div>
-                  <Label htmlFor="lighting">Chiếu sáng</Label>
+                  <Label htmlFor="lighting">Lighting</Label>
                   <Select
                     id="lighting"
                     value={String(formData.attributes?.lighting)}
                     onChange={(e) => updateAttributes('lighting', Number(e.target.value))}
                     className="mt-1"
                   >
-                    <option value="1">Có</option>
-                    <option value="0">Không</option>
+                    <option value="1">Yes</option>
+                    <option value="0">No</option>
                   </Select>
                 </div>
               </div>
               <div>
-                <Label htmlFor="attr_note">Ghi chú kỹ thuật</Label>
+                <Label htmlFor="attr_note">Technical Notes</Label>
                 <Textarea
                   id="attr_note"
                   value={formData.attributes?.note}
                   onChange={(e) => updateAttributes('note', e.target.value)}
-                  placeholder="Ghi chú về thông số kỹ thuật..."
+                  placeholder="Notes about technical specifications..."
                   className="mt-1"
                   rows={2}
                 />
@@ -1218,12 +1355,12 @@ const InventoryPage = () => {
 
             {/* Description */}
             <div>
-              <Label htmlFor="description">Mô tả sản phẩm</Label>
+              <Label htmlFor="description">Product Description</Label>
               <Textarea
                 id="description"
                 value={formData.description}
                 onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                placeholder="Mô tả chi tiết về sản phẩm..."
+                placeholder="Detailed product description..."
                 className="mt-1"
                 rows={3}
               />
@@ -1239,7 +1376,7 @@ const InventoryPage = () => {
                 resetForm()
               }}
             >
-              Hủy
+              Cancel
             </Button>
             <Button
               onClick={isEditOpen ? handleUpdate : handleCreate}
@@ -1253,7 +1390,7 @@ const InventoryPage = () => {
               }
             >
               {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              {isEditOpen ? 'Cập nhật' : 'Tạo mới'}
+              {isEditOpen ? 'Update' : 'Create'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1263,20 +1400,20 @@ const InventoryPage = () => {
       <Dialog open={isDeleteOpen} onOpenChange={setIsDeleteOpen}>
         <DialogContent onClose={() => setIsDeleteOpen(false)}>
           <DialogHeader>
-            <DialogTitle>Xác nhận xóa</DialogTitle>
+            <DialogTitle>Confirm Delete</DialogTitle>
           </DialogHeader>
           <p className="text-muted-foreground">
-            Bạn có chắc chắn muốn xóa sản phẩm{' '}
-            <strong>{selectedProduct?.product_name}</strong>? Hành động này không thể hoàn
-            tác.
+            Are you sure you want to delete product{' '}
+            <strong>{selectedProduct?.product_name}</strong>? This action cannot be
+            undone.
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setIsDeleteOpen(false)}>
-              Hủy
+              Cancel
             </Button>
             <Button variant="destructive" onClick={handleDelete} disabled={isSubmitting}>
               {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Xóa
+              Delete
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1294,14 +1431,14 @@ const InventoryPage = () => {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Sparkles className="h-5 w-5 text-yellow-500" />
-              Nhập sản phẩm bằng AI
+              Import Products with AI
             </DialogTitle>
           </DialogHeader>
 
           <div className="py-4">
             <p className="text-sm text-muted-foreground mb-4">
-              Upload file PDF hoặc hình ảnh chứa thông tin sản phẩm. Gemini AI sẽ tự động
-              trích xuất và điền vào form.
+              Upload a PDF or image file containing product information. Gemini AI will automatically
+              extract and fill in the form.
             </p>
 
             {aiError && (
@@ -1325,7 +1462,7 @@ const InventoryPage = () => {
                 setAiError(null)
               }}
             >
-              Đóng
+              Close
             </Button>
           </DialogFooter>
         </DialogContent>

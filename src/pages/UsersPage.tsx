@@ -242,7 +242,7 @@ const UsersPage = () => {
 
       const session = await checkSession()
       if (!session) {
-        setFetchError("Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.")
+        setFetchError("Session expired. Please log in again.")
         return
       }
 

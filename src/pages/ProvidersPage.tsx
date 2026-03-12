@@ -63,9 +63,9 @@ const ProvidersPage = () => {
   })
 
   // Major options
-  const majorOptions = ['Quảng cáo', 'In ấn', 'Sự kiện', 'Digital', 'Truyền thông', 'Thiết kế']
+  const majorOptions = ['Advertising', 'Printing', 'Events', 'Digital', 'Media', 'Design']
   // Type options  
-  const typeOptions = ['Công ty', 'Cá nhân', 'Freelancer', 'Agency']
+  const typeOptions = ['Company', 'Individual', 'Freelancer', 'Agency']
 
   // Fetch providers
   const fetchProviders = async () => {
@@ -196,10 +196,10 @@ const ProvidersPage = () => {
 
   const getStatusLabel = (status: number) => {
     switch (status) {
-      case 1: return 'Hoạt động'
-      case 0: return 'Ngừng'
-      case 2: return 'Chờ duyệt'
-      default: return 'Không xác định'
+      case 1: return 'Active'
+      case 0: return 'Inactive'
+      case 2: return 'Pending'
+      default: return 'Unknown'
     }
   }
 
@@ -226,12 +226,12 @@ const ProvidersPage = () => {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Nhà cung cấp</h1>
-          <p className="text-muted-foreground">Quản lý danh sách nhà cung cấp dịch vụ</p>
+          <h1 className="text-2xl font-bold">Providers</h1>
+          <p className="text-muted-foreground">Manage service providers list</p>
         </div>
         <Button onClick={() => setIsCreateOpen(true)}>
           <Plus className="mr-2 h-4 w-4" />
-          Thêm nhà cung cấp
+          Add Provider
         </Button>
       </div>
 
@@ -240,7 +240,7 @@ const ProvidersPage = () => {
         <div className="relative flex-1 min-w-[200px]">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
-            placeholder="Tìm kiếm theo tên, mã, số điện thoại..."
+            placeholder="Search by name, code, phone..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="pl-10"
@@ -251,10 +251,10 @@ const ProvidersPage = () => {
           onChange={(e) => setFilterStatus(e.target.value)}
           className="w-[150px]"
         >
-          <option value="all">Tất cả trạng thái</option>
-          <option value="1">Đang hoạt động</option>
-          <option value="0">Ngừng hoạt động</option>
-          <option value="2">Chờ duyệt</option>
+          <option value="all">All Status</option>
+          <option value="1">Active</option>
+          <option value="0">Inactive</option>
+          <option value="2">Pending</option>
         </Select>
       </div>
 
@@ -266,7 +266,7 @@ const ProvidersPage = () => {
               <Truck className="h-5 w-5 text-primary" />
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">Tổng số</p>
+              <p className="text-sm text-muted-foreground">Total</p>
               <p className="text-2xl font-bold">{providers.length}</p>
             </div>
           </div>
@@ -277,7 +277,7 @@ const ProvidersPage = () => {
               <Building2 className="h-5 w-5 text-green-500" />
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">Đang hoạt động</p>
+              <p className="text-sm text-muted-foreground">Active</p>
               <p className="text-2xl font-bold">{providers.filter(p => p.status === 1).length}</p>
             </div>
           </div>
@@ -288,7 +288,7 @@ const ProvidersPage = () => {
               <Building2 className="h-5 w-5 text-yellow-500" />
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">Chờ duyệt</p>
+              <p className="text-sm text-muted-foreground">Pending</p>
               <p className="text-2xl font-bold">{providers.filter(p => p.status === 2).length}</p>
             </div>
           </div>
@@ -299,7 +299,7 @@ const ProvidersPage = () => {
               <Building2 className="h-5 w-5 text-gray-500" />
             </div>
             <div>
-              <p className="text-sm text-muted-foreground">Ngừng hoạt động</p>
+              <p className="text-sm text-muted-foreground">Inactive</p>
               <p className="text-2xl font-bold">{providers.filter(p => p.status === 0).length}</p>
             </div>
           </div>
@@ -312,13 +312,13 @@ const ProvidersPage = () => {
           <table className="w-full">
             <thead className="bg-muted/50">
               <tr>
-                <th className="px-4 py-3 text-left text-sm font-medium">Mã</th>
-                <th className="px-4 py-3 text-left text-sm font-medium">Nhà cung cấp</th>
-                <th className="px-4 py-3 text-left text-sm font-medium">Liên hệ</th>
-                <th className="px-4 py-3 text-left text-sm font-medium">Lĩnh vực</th>
-                <th className="px-4 py-3 text-left text-sm font-medium">Ưu tiên</th>
-                <th className="px-4 py-3 text-left text-sm font-medium">Trạng thái</th>
-                <th className="px-4 py-3 text-right text-sm font-medium">Thao tác</th>
+                <th className="px-4 py-3 text-left text-sm font-medium">Code</th>
+                <th className="px-4 py-3 text-left text-sm font-medium">Provider</th>
+                <th className="px-4 py-3 text-left text-sm font-medium">Contact</th>
+                <th className="px-4 py-3 text-left text-sm font-medium">Industry</th>
+                <th className="px-4 py-3 text-left text-sm font-medium">Priority</th>
+                <th className="px-4 py-3 text-left text-sm font-medium">Status</th>
+                <th className="px-4 py-3 text-right text-sm font-medium">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
@@ -411,7 +411,7 @@ const ProvidersPage = () => {
         {filteredProviders.length === 0 && (
           <div className="py-12 text-center">
             <Truck className="mx-auto h-12 w-12 text-muted-foreground/50" />
-            <p className="mt-4 text-muted-foreground">Không tìm thấy nhà cung cấp nào</p>
+            <p className="mt-4 text-muted-foreground">No providers found</p>
           </div>
         )}
       </div>
@@ -431,14 +431,14 @@ const ProvidersPage = () => {
         }}>
           <DialogHeader>
             <DialogTitle>
-              {isEditOpen ? 'Chỉnh sửa nhà cung cấp' : 'Thêm nhà cung cấp mới'}
+              {isEditOpen ? 'Edit Provider' : 'Add New Provider'}
             </DialogTitle>
           </DialogHeader>
 
           <div className="grid grid-cols-2 gap-4 py-4">
             {isEditOpen && (
               <div>
-                <Label htmlFor="code">Mã NCC</Label>
+                <Label htmlFor="code">Provider Code</Label>
                 <Input
                   id="code"
                   value={formData.code}
@@ -449,18 +449,18 @@ const ProvidersPage = () => {
             )}
 
             <div className={isEditOpen ? '' : 'col-span-2'}>
-              <Label htmlFor="name">Tên nhà cung cấp *</Label>
+              <Label htmlFor="name">Provider Name *</Label>
               <Input
                 id="name"
                 value={formData.name}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                placeholder="Nhập tên nhà cung cấp"
+                placeholder="Enter provider name"
                 className="mt-1"
               />
             </div>
 
             <div>
-              <Label htmlFor="phone">Số điện thoại</Label>
+              <Label htmlFor="phone">Phone</Label>
               <Input
                 id="phone"
                 value={formData.phone}
@@ -471,29 +471,29 @@ const ProvidersPage = () => {
             </div>
 
             <div>
-              <Label htmlFor="tax">Mã số thuế</Label>
+              <Label htmlFor="tax">Tax Code</Label>
               <Input
                 id="tax"
                 value={formData.tax}
                 onChange={(e) => setFormData({ ...formData, tax: e.target.value })}
-                placeholder="Mã số thuế"
+                placeholder="Tax code"
                 className="mt-1"
               />
             </div>
 
             <div className="col-span-2">
-              <Label htmlFor="address">Địa chỉ</Label>
+              <Label htmlFor="address">Address</Label>
               <Input
                 id="address"
                 value={formData.address}
                 onChange={(e) => setFormData({ ...formData, address: e.target.value })}
-                placeholder="Địa chỉ"
+                placeholder="Address"
                 className="mt-1"
               />
             </div>
 
             <div>
-              <Label htmlFor="priority">Độ ưu tiên (0-10)</Label>
+              <Label htmlFor="priority">Priority (0-10)</Label>
               <Input
                 id="priority"
                 type="number"
@@ -506,21 +506,21 @@ const ProvidersPage = () => {
             </div>
 
             <div>
-              <Label htmlFor="status">Trạng thái</Label>
+              <Label htmlFor="status">Status</Label>
               <Select
                 id="status"
                 value={formData.status?.toString()}
                 onChange={(e) => setFormData({ ...formData, status: parseInt(e.target.value) })}
                 className="mt-1"
               >
-                <option value="1">Đang hoạt động</option>
-                <option value="0">Ngừng hoạt động</option>
-                <option value="2">Chờ duyệt</option>
+                <option value="1">Active</option>
+                <option value="0">Inactive</option>
+                <option value="2">Pending</option>
               </Select>
             </div>
 
             <div className="col-span-2">
-              <Label>Lĩnh vực hoạt động</Label>
+              <Label>Industry</Label>
               <div className="mt-2 flex flex-wrap gap-2">
                 {majorOptions.map((option) => (
                   <button
@@ -540,7 +540,7 @@ const ProvidersPage = () => {
             </div>
 
             <div className="col-span-2">
-              <Label>Loại hình</Label>
+              <Label>Type</Label>
               <div className="mt-2 flex flex-wrap gap-2">
                 {typeOptions.map((option) => (
                   <button
@@ -560,12 +560,12 @@ const ProvidersPage = () => {
             </div>
 
             <div className="col-span-2">
-              <Label htmlFor="response">Người phụ trách</Label>
+              <Label htmlFor="response">Person in Charge</Label>
               <Input
                 id="response"
                 value={formData.response}
                 onChange={(e) => setFormData({ ...formData, response: e.target.value })}
-                placeholder="Tên người phụ trách"
+                placeholder="Name of person in charge"
                 className="mt-1"
               />
             </div>
@@ -580,14 +580,14 @@ const ProvidersPage = () => {
                 resetForm()
               }}
             >
-              Hủy
+              Cancel
             </Button>
             <Button
               onClick={isEditOpen ? handleUpdate : handleCreate}
               disabled={!formData.name || isSubmitting}
             >
               {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              {isEditOpen ? 'Cập nhật' : 'Tạo mới'}
+              {isEditOpen ? 'Update' : 'Create'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -597,19 +597,19 @@ const ProvidersPage = () => {
       <Dialog open={isDeleteOpen} onOpenChange={setIsDeleteOpen}>
         <DialogContent onClose={() => setIsDeleteOpen(false)}>
           <DialogHeader>
-            <DialogTitle>Xác nhận xóa</DialogTitle>
+            <DialogTitle>Confirm Delete</DialogTitle>
           </DialogHeader>
           <p className="text-muted-foreground">
-            Bạn có chắc chắn muốn xóa nhà cung cấp <strong>{selectedProvider?.name}</strong> ({selectedProvider?.code})? 
-            Hành động này không thể hoàn tác.
+            Are you sure you want to delete provider <strong>{selectedProvider?.name}</strong> ({selectedProvider?.code})? 
+            This action cannot be undone.
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setIsDeleteOpen(false)}>
-              Hủy
+              Cancel
             </Button>
             <Button variant="destructive" onClick={handleDelete} disabled={isSubmitting}>
               {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Xóa
+              Delete
             </Button>
           </DialogFooter>
         </DialogContent>

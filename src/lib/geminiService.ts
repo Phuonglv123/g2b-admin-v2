@@ -355,6 +355,269 @@ export async function extractProductsFromFiles(files: File[]): Promise<Extractio
 }
 
 /**
+ * Match images to products using Gemini AI
+ * Analyzes each image and determines which product it belongs to
+ */
+export interface ImageMatchResult {
+  imageUrl: string
+  pageNumber: number
+  matchedProductName: string | null
+  matchedProductCode: string | null
+  confidence: number
+}
+
+export interface ImageMatchingResult {
+  success: boolean
+  matches: ImageMatchResult[]
+  error?: string
+}
+
+const IMAGE_MATCHING_PROMPT = `
+Bạn là AI chuyên phân tích hình ảnh quảng cáo ngoài trời (OOH - Out of Home).
+
+**NHIỆM VỤ:**
+Đọc TEXT/CHỮ hiển thị trên hình ảnh này (thường ở phần header/title) và tìm sản phẩm PHÙ HỢP trong danh sách.
+
+**DANH SÁCH SẢN PHẨM:**
+{PRODUCT_LIST}
+
+**CÁCH MATCH:**
+1. Đọc dòng chữ TIÊU ĐỀ ở trên cùng của hình ảnh (ví dụ: "LED SCREEN 02 NGUYEN TRAI – BEN THANH, HCMC")
+2. So sánh với tên sản phẩm trong danh sách
+3. Match nếu chứa các từ khóa giống nhau (tên đường, quận, loại bảng...)
+
+**VÍ DỤ:**
+- Hình có title "LED SCREEN 02 NGUYEN TRAI" → match với product có tên chứa "Nguyễn Trãi" hoặc "LED"
+- Hình có title "BILLBOARD Q1 HCMC" → match với product ở Quận 1, HCMC
+
+**TRẢ VỀ JSON:**
+{
+  "detected_title": "Text tiêu đề đọc được từ hình",
+  "matched_product_name": "Tên sản phẩm phù hợp nhất (hoặc null nếu không match)",
+  "matched_product_code": "Mã sản phẩm phù hợp (hoặc null)",
+  "confidence": 0.0-1.0,
+  "reason": "Lý do match"
+}
+
+**LƯU Ý:**
+- Nếu hình ảnh KHÔNG CÓ tiêu đề/title text → trả về null
+- Nếu hình ảnh chỉ là logo công ty → trả về null
+- Confidence > 0.7 = text match rõ ràng
+- Confidence < 0.4 = không chắc chắn
+
+**PHÂN TÍCH HÌNH ẢNH:**
+`
+
+/**
+ * Match a single image to a list of products using Gemini AI
+ * Analyzes the title/header text in the image and matches to product names
+ */
+export async function matchImageToProduct(
+  imageUrl: string,
+  pageNumber: number,
+  products: ExtractedProductData[]
+): Promise<ImageMatchResult> {
+  const defaultResult: ImageMatchResult = {
+    imageUrl,
+    pageNumber,
+    matchedProductName: null,
+    matchedProductCode: null,
+    confidence: 0
+  }
+
+  try {
+    if (!import.meta.env.VITE_GEMINI_API_KEY) {
+      console.warn('Gemini API key not configured')
+      return defaultResult
+    }
+
+    // Create product list string for the prompt - focus on names for matching
+    const productListStr = products.map((p, i) => 
+      `${i + 1}. Tên: "${p.product_name}", Mã: ${p.product_code || 'N/A'}, Địa chỉ: ${p.location.address}`
+    ).join('\n')
+
+    const prompt = IMAGE_MATCHING_PROMPT.replace('{PRODUCT_LIST}', productListStr)
+
+    // Fetch image and convert to base64
+    const response = await fetch(imageUrl)
+    if (!response.ok) {
+      console.error(`Failed to fetch image: ${imageUrl}`)
+      return defaultResult
+    }
+    
+    const blob = await response.blob()
+    const base64 = await new Promise<string>((resolve) => {
+      const reader = new FileReader()
+      reader.onloadend = () => {
+        const result = reader.result as string
+        resolve(result.split(',')[1])
+      }
+      reader.readAsDataURL(blob)
+    })
+
+    // Initialize model - use gemini-1.5-flash (available model)
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' })
+
+    // Prepare image part
+    const imagePart = {
+      inlineData: {
+        data: base64,
+        mimeType: 'image/jpeg',
+      },
+    }
+
+    // Generate content
+    const result = await model.generateContent([prompt, imagePart])
+    const text = result.response.text()
+
+    console.log(`🔍 Image page ${pageNumber} analysis:`, text.substring(0, 200))
+
+    // Parse JSON from response
+    const jsonMatch = text.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) {
+      console.warn('No JSON found in image matching response')
+      return defaultResult
+    }
+
+    const parsed = JSON.parse(jsonMatch[0])
+    
+    return {
+      imageUrl,
+      pageNumber,
+      matchedProductName: parsed.matched_product_name || null,
+      matchedProductCode: parsed.matched_product_code || null,
+      confidence: parsed.confidence || 0
+    }
+  } catch (error) {
+    console.error('Error matching image to product:', error)
+    return defaultResult
+  }
+}
+
+/**
+ * Match multiple images to products using AI (legacy method)
+ * Returns a map of product_name -> image_urls[]
+ */
+export async function matchImagesToProducts(
+  imageUrls: string[],
+  products: ExtractedProductData[]
+): Promise<Map<string, string[]>> {
+  const productImageMap = new Map<string, string[]>()
+  
+  // Initialize map with empty arrays for each product
+  products.forEach(p => {
+    productImageMap.set(p.product_name, [])
+  })
+
+  console.log(`🔍 Matching ${imageUrls.length} images to ${products.length} products using AI...`)
+
+  // Process images in parallel (but limit concurrency)
+  const BATCH_SIZE = 3
+  for (let i = 0; i < imageUrls.length; i += BATCH_SIZE) {
+    const batch = imageUrls.slice(i, i + BATCH_SIZE)
+    const batchPromises = batch.map((url, idx) => 
+      matchImageToProduct(url, i + idx + 1, products)
+    )
+    
+    const results = await Promise.all(batchPromises)
+    
+    for (const result of results) {
+      if (result.matchedProductName && result.confidence >= 0.4) {
+        const existing = productImageMap.get(result.matchedProductName) || []
+        existing.push(result.imageUrl)
+        productImageMap.set(result.matchedProductName, existing)
+        console.log(`✅ Image page ${result.pageNumber} matched to "${result.matchedProductName}" (confidence: ${(result.confidence * 100).toFixed(0)}%)`)
+      } else {
+        console.log(`⚠️ Image page ${result.pageNumber} could not be matched (confidence: ${(result.confidence * 100).toFixed(0)}%)`)
+      }
+    }
+  }
+
+  return productImageMap
+}
+
+/**
+ * Match images to products by page position
+ * 
+ * PDF Structure:
+ * - Page 1: Provider info (skip)
+ * - Page 2: Product 1 info
+ * - Page 3, 4, 5: Product 1 images (3 images)
+ * - Page 6: Product 2 info
+ * - Page 7, 8, 9: Product 2 images (3 images)
+ * - ... and so on
+ * 
+ * Each product takes 4 pages: 1 info page + 3 image pages
+ * Images start from page 2 (index 1 in array, since page 1 is provider)
+ * 
+ * @param imageUrls - Array of image URLs from converted PDF pages (page 1 = index 0)
+ * @param products - Array of extracted products
+ * @param imagesPerProduct - Number of images per product (default: 3)
+ * @returns Map of product_name -> image_urls[]
+ */
+export function matchImagesByPagePosition(
+  imageUrls: string[],
+  products: ExtractedProductData[],
+  imagesPerProduct: number = 3
+): Map<string, string[]> {
+  const productImageMap = new Map<string, string[]>()
+  
+  // Initialize map with empty arrays for each product
+  products.forEach(p => {
+    productImageMap.set(p.product_name, [])
+  })
+
+  console.log(`📍 Matching ${imageUrls.length} images to ${products.length} products by page position...`)
+  console.log(`📍 Structure: Page 1 = Provider, then each product = 1 info page + ${imagesPerProduct} image pages`)
+
+  // Skip page 1 (provider info) - index 0
+  // For each product:
+  // - Product N info is at page: 1 + (N-1) * 4 + 1 = 2, 6, 10, ... (but we don't need info pages)
+  // - Product N images are at pages: 2 + (N-1) * 4 + 1 to 2 + (N-1) * 4 + 3
+  //   = pages 3,4,5 for product 1 (index 2,3,4)
+  //   = pages 7,8,9 for product 2 (index 6,7,8)
+  //   etc.
+
+  // Simplified: 
+  // - Page index 0 = provider (skip)
+  // - Pages per product = 1 (info) + imagesPerProduct (images) = 4 total
+  // - Product 1 images: index 2, 3, 4
+  // - Product 2 images: index 6, 7, 8
+  // - Product N images: index (N-1)*4 + 2 to (N-1)*4 + 4
+
+  const pagesPerProduct = 1 + imagesPerProduct // 1 info + 3 images = 4
+
+  for (let productIndex = 0; productIndex < products.length; productIndex++) {
+    const product = products[productIndex]
+    const productImages: string[] = []
+    
+    // Calculate starting image index for this product
+    // Skip provider page (1), then for each previous product skip their pages (4 each)
+    // Then skip current product's info page (1)
+    // = 1 + productIndex * 4 + 1 = 2 + productIndex * 4
+    const startImageIndex = 1 + productIndex * pagesPerProduct + 1 // 1 (provider) + productIndex * 4 + 1 (info page)
+    
+    console.log(`📦 Product ${productIndex + 1}: "${product.product_name}"`)
+    console.log(`   Looking for images at page indexes: ${startImageIndex} to ${startImageIndex + imagesPerProduct - 1}`)
+    
+    for (let i = 0; i < imagesPerProduct; i++) {
+      const imageIndex = startImageIndex + i
+      if (imageIndex < imageUrls.length) {
+        productImages.push(imageUrls[imageIndex])
+        console.log(`   ✅ Added image from page ${imageIndex + 1} (index ${imageIndex})`)
+      } else {
+        console.log(`   ⚠️ Page ${imageIndex + 1} not found (total pages: ${imageUrls.length})`)
+      }
+    }
+    
+    productImageMap.set(product.product_name, productImages)
+    console.log(`   📷 Total images for this product: ${productImages.length}`)
+  }
+
+  return productImageMap
+}
+
+/**
  * Convert extracted data to CreateProductParams format
  */
 export function convertToProductParams(
