@@ -39,17 +39,18 @@ import {
   updateProduct,
   deleteProduct,
   getProductStats,
-  getLocations,
-  createLocation,
+  getProductCities,
   generateProductCode,
   formatCurrency,
   getProductStatusLabel,
   getProductTypeLabel,
   getDefaultAttributes,
+  buildLocationAddress,
 } from '@/lib/productProvider'
 import { getProviders, findOrCreateProvider } from '@/lib/customerProvider'
 import { useAuth } from '@/contexts/AuthContext'
-import { PDFUploadExtractor } from '@/components/inventory'
+import { PDFUploadExtractor, ImageEditor } from '@/components/inventory'
+import { VietnamAddressSelector } from '@/components/location'
 import { convertAndUploadPdfImages } from '@/lib/convertApiService'
 import { supabase } from '@/lib/supabase'
 import { matchImagesByPagePosition } from '@/lib/geminiService'
@@ -61,7 +62,7 @@ import type {
   ProductStatus,
   ProductStats,
   ProductAttributes,
-  Location,
+  VietnamAddress,
 } from '@/types/product'
 import type { Provider } from '@/types/customer'
 
@@ -86,7 +87,7 @@ const statusStyles: Record<ProductStatus, string> = {
 const InventoryPage = () => {
   const { user } = useAuth()
   const [products, setProducts] = useState<ProductWithRelations[]>([])
-  const [locations, setLocations] = useState<Location[]>([])
+  const [cities, setCities] = useState<string[]>([])
   const [providers, setProviders] = useState<Provider[]>([])
   const [stats, setStats] = useState<ProductStats | null>(null)
   const [loading, setLoading] = useState(true)
@@ -111,6 +112,12 @@ const InventoryPage = () => {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [aiError, setAiError] = useState<string | null>(null)
 
+  // Location form state (embedded in product)
+  const [locationData, setLocationData] = useState<VietnamAddress>({})
+  const [gpsCoordinates, setGpsCoordinates] = useState('')
+  const [localTax, setLocalTax] = useState<number | undefined>(undefined)
+  const [landmark, setLandmark] = useState('')
+
   // Form state
   const [formData, setFormData] = useState<Partial<CreateProductParams>>({
     product_code: '',
@@ -125,7 +132,7 @@ const InventoryPage = () => {
     traffic: '',
     booking_duration: '',
     provider_id: '',
-    location_id: '',
+    city_province: 'Ho Chi Minh',
     attributes: getDefaultAttributes(),
     description: '',
   })
@@ -134,14 +141,14 @@ const InventoryPage = () => {
   const fetchData = async () => {
     try {
       setLoading(true)
-      const [productsData, locationsData, providersData, statsData] = await Promise.all([
+      const [productsData, citiesData, providersData, statsData] = await Promise.all([
         getProducts(),
-        getLocations(),
+        getProductCities(),
         getProviders(),
         getProductStats(),
       ])
       setProducts(productsData)
-      setLocations(locationsData)
+      setCities(citiesData)
       setProviders(providersData)
       setStats(statsData)
     } catch (error) {
@@ -160,10 +167,12 @@ const InventoryPage = () => {
     return products.filter((product) => {
       const matchesSearch =
         product.product_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        product.product_code.toLowerCase().includes(searchTerm.toLowerCase())
+        product.product_code.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (product.location_name && product.location_name.toLowerCase().includes(searchTerm.toLowerCase())) ||
+        (product.location_address && product.location_address.toLowerCase().includes(searchTerm.toLowerCase()))
       const matchesType = filterType === 'all' || product.type === filterType
       const matchesStatus = filterStatus === 'all' || product.status === Number(filterStatus)
-      const matchesCity = filterCity === 'all' || product.location_city === filterCity
+      const matchesCity = filterCity === 'all' || product.city_province === filterCity
 
       return matchesSearch && matchesType && matchesStatus && matchesCity
     })
@@ -176,11 +185,6 @@ const InventoryPage = () => {
   }, [filteredProducts, currentPage])
 
   const totalPages = Math.ceil(filteredProducts.length / itemsPerPage)
-
-  // Get unique cities
-  const cities = useMemo(() => {
-    return [...new Set(locations.map((l) => l.city))]
-  }, [locations])
 
   // Reset form
   const resetForm = async () => {
@@ -198,10 +202,15 @@ const InventoryPage = () => {
       traffic: '',
       booking_duration: '',
       provider_id: '',
-      location_id: '',
+      city_province: 'Ho Chi Minh',
       attributes: getDefaultAttributes(),
       description: '',
     })
+    // Reset location fields
+    setLocationData({})
+    setGpsCoordinates('')
+    setLocalTax(undefined)
+    setLandmark('')
     setSelectedProduct(null)
   }
 
@@ -227,10 +236,30 @@ const InventoryPage = () => {
       traffic: product.traffic,
       booking_duration: product.booking_duration,
       provider_id: product.provider_id,
-      location_id: product.location_id,
+      // Embedded location fields
+      location_name: product.location_name || '',
+      location_address: product.location_address || '',
+      street_number: product.street_number || '',
+      street_name: product.street_name || '',
+      ward: product.ward || '',
+      city_province: product.city_province || 'Ho Chi Minh',
+      province_code: product.province_code || undefined,
+      ward_code: product.ward_code || undefined,
       attributes: product.attributes,
       description: product.description || '',
     })
+    // Set location state
+    setLocationData({
+      street_number: product.street_number || undefined,
+      street_name: product.street_name || undefined,
+      ward: product.ward || undefined,
+      ward_code: product.ward_code || undefined,
+      city_province: product.city_province || undefined,
+      province_code: product.province_code || undefined,
+    })
+    setGpsCoordinates(product.gps_coordinates || '')
+    setLocalTax(product.local_tax || undefined)
+    setLandmark(product.landmark || '')
     setIsEditOpen(true)
   }
 
@@ -239,9 +268,41 @@ const InventoryPage = () => {
     if (!user) return
     try {
       setIsSubmitting(true)
+      // Build location address from form
+      const locationAddress = buildLocationAddress(
+        locationData.street_number,
+        locationData.street_name,
+        locationData.ward,
+        locationData.city_province
+      )
+      
+      // Parse GPS coordinates
+      let latitude: number | undefined
+      let longitude: number | undefined
+      if (gpsCoordinates) {
+        const [lat, lng] = gpsCoordinates.split(',').map(s => parseFloat(s.trim()))
+        if (!isNaN(lat) && !isNaN(lng)) {
+          latitude = lat
+          longitude = lng
+        }
+      }
+
       await createProduct({
         ...formData,
         user_id: user.id,
+        location_name: formData.product_name, // Use product name as location name
+        location_address: locationAddress,
+        street_number: locationData.street_number,
+        street_name: locationData.street_name,
+        ward: locationData.ward,
+        ward_code: locationData.ward_code,
+        city_province: locationData.city_province || 'Ho Chi Minh',
+        province_code: locationData.province_code,
+        latitude,
+        longitude,
+        gps_coordinates: gpsCoordinates || undefined,
+        landmark: landmark || undefined,
+        local_tax: localTax,
       } as CreateProductParams)
       await fetchData()
       setIsCreateOpen(false)
@@ -258,9 +319,40 @@ const InventoryPage = () => {
     if (!selectedProduct) return
     try {
       setIsSubmitting(true)
+      // Build location address from form
+      const locationAddress = buildLocationAddress(
+        locationData.street_number,
+        locationData.street_name,
+        locationData.ward,
+        locationData.city_province
+      )
+      
+      // Parse GPS coordinates
+      let latitude: number | undefined
+      let longitude: number | undefined
+      if (gpsCoordinates) {
+        const [lat, lng] = gpsCoordinates.split(',').map(s => parseFloat(s.trim()))
+        if (!isNaN(lat) && !isNaN(lng)) {
+          latitude = lat
+          longitude = lng
+        }
+      }
+
       await updateProduct({
         id: selectedProduct.id,
         ...formData,
+        location_address: locationAddress,
+        street_number: locationData.street_number,
+        street_name: locationData.street_name,
+        ward: locationData.ward,
+        ward_code: locationData.ward_code,
+        city_province: locationData.city_province,
+        province_code: locationData.province_code,
+        latitude,
+        longitude,
+        gps_coordinates: gpsCoordinates || undefined,
+        landmark: landmark || undefined,
+        local_tax: localTax,
       })
       await fetchData()
       setIsEditOpen(false)
@@ -424,7 +516,7 @@ const InventoryPage = () => {
     }
   }
 
-  // Process a single extracted product
+  // Process a single extracted product (location embedded directly)
   const processExtractedProduct = async (
     data: ExtractedProductData, 
     providerId: string, 
@@ -435,35 +527,22 @@ const InventoryPage = () => {
     // Use product_code from AI if available, otherwise generate new one
     const code = data.product_code || await generateProductCode(data.type)
     
-    // Check if we need to create a new location
-    let locationId = ''
-    if (data.location.name || data.location.address) {
-      // Try to find existing location by name or address
-      const existingLocation = locations.find(
-        (l) => 
-          (data.location.name && l.name.toLowerCase().includes(data.location.name.toLowerCase())) || 
-          (data.location.address && l.address.toLowerCase().includes(data.location.address.toLowerCase()))
-      )
-      
-      if (existingLocation) {
-        locationId = existingLocation.id
-      } else if (data.location.address) {
-        // Create new location if we have at least an address
-        try {
-          const newLocation = await createLocation({
-            name: data.location.name || data.product_name,
-            address: data.location.address,
-            district: data.location.district,
-            city: data.location.city || 'Ho Chi Minh',
-            landmark: data.location.landmark,
-          })
-          locationId = newLocation.id
-          // Refresh locations
-          const updatedLocations = await getLocations()
-          setLocations(updatedLocations)
-        } catch (error) {
-          console.error('Error creating location:', error)
-        }
+    // Build location address from components
+    const locationAddress = buildLocationAddress(
+      data.location.street_number,
+      data.location.street_name,
+      data.location.ward,
+      data.location.city_province
+    )
+
+    // Parse GPS coordinates if available
+    let latitude: number | undefined
+    let longitude: number | undefined
+    if (data.location.gps_coordinates) {
+      const [lat, lng] = data.location.gps_coordinates.split(',').map(s => parseFloat(s.trim()))
+      if (!isNaN(lat) && !isNaN(lng)) {
+        latitude = lat
+        longitude = lng
       }
     }
 
@@ -473,7 +552,7 @@ const InventoryPage = () => {
       description = `View: ${data.location.landmark}`
     }
 
-    // Create product with extracted images
+    // Create product with embedded location
     await createProduct({
       user_id: user.id,
       product_code: code,
@@ -481,14 +560,25 @@ const InventoryPage = () => {
       type: data.type,
       areas: data.areas,
       status: 1,
-      images: images, // Use extracted images from PDF
+      images: images,
       cost: data.cost,
       production_cost: data.production_cost,
       currency: data.currency,
       traffic: data.traffic,
       booking_duration: data.booking_duration,
       provider_id: providerId,
-      location_id: locationId || '',
+      // Embedded location fields
+      location_name: data.location.name || data.product_name,
+      location_address: locationAddress || data.location.address,
+      street_number: data.location.street_number,
+      street_name: data.location.street_name,
+      ward: data.location.ward,
+      city_province: data.location.city_province || 'Ho Chi Minh',
+      latitude,
+      longitude,
+      gps_coordinates: data.location.gps_coordinates,
+      landmark: data.location.landmark,
+      local_tax: data.location.local_tax,
       attributes: data.attributes,
       description: description,
     })
@@ -683,8 +773,8 @@ const InventoryPage = () => {
                       <div className="flex items-center gap-2 text-sm">
                         <MapPin className="h-4 w-4 text-muted-foreground" />
                         <div>
-                          <p>{product.location_name}</p>
-                          <p className="text-xs text-muted-foreground">{product.location_city}</p>
+                          <p>{product.location_name || product.product_name}</p>
+                          <p className="text-xs text-muted-foreground">{product.city_province}</p>
                         </div>
                       </div>
                     </td>
@@ -829,9 +919,30 @@ const InventoryPage = () => {
                     <MapPin className="h-4 w-4 text-primary" />
                     <Label className="font-medium">Location</Label>
                   </div>
-                  <p>{selectedProduct.location_name}</p>
-                  <p className="text-sm text-muted-foreground">{selectedProduct.location_address}</p>
-                  <p className="text-sm text-muted-foreground">{selectedProduct.location_city}</p>
+                  <p className="font-medium">{selectedProduct.location_name || selectedProduct.product_name}</p>
+                  <div className="text-sm text-muted-foreground space-y-1 mt-2">
+                    {selectedProduct.location_address && (
+                      <p>{selectedProduct.location_address}</p>
+                    )}
+                    {(selectedProduct.ward || selectedProduct.city_province) && (
+                      <p>
+                        {[
+                          selectedProduct.ward,
+                          selectedProduct.city_province
+                        ].filter(Boolean).join(', ')}
+                      </p>
+                    )}
+                    {selectedProduct.gps_coordinates && (
+                      <p className="text-xs">
+                        <span className="text-muted-foreground">GPS:</span> {selectedProduct.gps_coordinates}
+                      </p>
+                    )}
+                    {selectedProduct.local_tax && (
+                      <p className="text-xs">
+                        <span className="text-muted-foreground">Local Tax:</span> {selectedProduct.local_tax}%
+                      </p>
+                    )}
+                  </div>
                 </div>
                 <div className="rounded-lg border border-border p-4">
                   <div className="flex items-center gap-2 mb-2">
@@ -1098,45 +1209,52 @@ const InventoryPage = () => {
               </div>
             </div>
 
-            {/* Location & Provider */}
+            {/* Location (embedded in product) */}
+            <VietnamAddressSelector
+              value={locationData}
+              onChange={setLocationData}
+              showGPS={true}
+              showCurrency={false}
+              showLocalTax={true}
+              gpsCoordinates={gpsCoordinates}
+              localTax={localTax}
+              onGPSChange={setGpsCoordinates}
+              onLocalTaxChange={setLocalTax}
+            />
+            
+            {/* Landmark */}
+            <div>
+              <Label htmlFor="landmark">Điểm mốc / Hướng nhìn</Label>
+              <Input
+                id="landmark"
+                value={landmark}
+                onChange={(e) => setLandmark(e.target.value)}
+                placeholder="VD: Gần sân bay Tân Sơn Nhất, Hướng về trung tâm..."
+                className="mt-1"
+              />
+            </div>
+
+            {/* Provider */}
             <div className="space-y-4">
               <h3 className="font-medium flex items-center gap-2">
-                <MapPin className="h-4 w-4" />
-                Location & Provider
+                <Building2 className="h-4 w-4" />
+                Provider
               </h3>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <Label htmlFor="location_id">Location *</Label>
-                  <Select
-                    id="location_id"
-                    value={formData.location_id}
-                    onChange={(e) => setFormData({ ...formData, location_id: e.target.value })}
-                    className="mt-1"
-                  >
-                    <option value="">Select location</option>
-                    {locations.map((loc) => (
-                      <option key={loc.id} value={loc.id}>
-                        {loc.name} - {loc.city}
-                      </option>
-                    ))}
-                  </Select>
-                </div>
-                <div>
-                  <Label htmlFor="provider_id">Provider *</Label>
-                  <Select
-                    id="provider_id"
-                    value={formData.provider_id}
-                    onChange={(e) => setFormData({ ...formData, provider_id: e.target.value })}
-                    className="mt-1"
-                  >
-                    <option value="">Select provider</option>
-                    {providers.map((provider) => (
-                      <option key={provider.id} value={provider.id}>
-                        {provider.name}
-                      </option>
-                    ))}
-                  </Select>
-                </div>
+              <div>
+                <Label htmlFor="provider_id">Nhà cung cấp *</Label>
+                <Select
+                  id="provider_id"
+                  value={formData.provider_id}
+                  onChange={(e) => setFormData({ ...formData, provider_id: e.target.value })}
+                  className="mt-1"
+                >
+                  <option value="">Chọn nhà cung cấp</option>
+                  {providers.map((provider) => (
+                    <option key={provider.id} value={provider.id}>
+                      {provider.name}
+                    </option>
+                  ))}
+                </Select>
               </div>
             </div>
 
@@ -1365,6 +1483,15 @@ const InventoryPage = () => {
                 rows={3}
               />
             </div>
+
+            {/* Product Images */}
+            <ImageEditor
+              images={formData.images || []}
+              onChange={(images) => setFormData({ ...formData, images })}
+              productCode={formData.product_code || 'new-product'}
+              maxImages={10}
+              disabled={isSubmitting}
+            />
           </div>
 
           <DialogFooter>
@@ -1382,7 +1509,7 @@ const InventoryPage = () => {
               onClick={isEditOpen ? handleUpdate : handleCreate}
               disabled={
                 !formData.product_name ||
-                !formData.location_id ||
+                !locationData.city_province ||
                 !formData.provider_id ||
                 !formData.traffic ||
                 !formData.booking_duration ||
@@ -1398,7 +1525,7 @@ const InventoryPage = () => {
 
       {/* Delete Confirmation Dialog */}
       <Dialog open={isDeleteOpen} onOpenChange={setIsDeleteOpen}>
-        <DialogContent onClose={() => setIsDeleteOpen(false)}>
+        <DialogContent>
           <DialogHeader>
             <DialogTitle>Confirm Delete</DialogTitle>
           </DialogHeader>
@@ -1467,6 +1594,7 @@ const InventoryPage = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
     </div>
   )
 }

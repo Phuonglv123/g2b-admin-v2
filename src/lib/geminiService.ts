@@ -1,5 +1,11 @@
 import { GoogleGenerativeAI } from '@google/generative-ai'
 import type { CreateProductParams, ProductAttributes, ProductType } from '@/types/product'
+import { 
+  geocodeAddress, 
+  buildFullAddress as buildGeoAddress,
+  formatGPSCoordinates,
+  isValidVietnamCoordinates 
+} from './geocodingService'
 
 // Initialize Gemini AI
 const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY || '')
@@ -20,9 +26,14 @@ Bạn là một AI chuyên trích xuất thông tin sản phẩm quảng cáo ng
 - Mã vị trí / Mã sản phẩm / Code → product_code
 - Tên vị trí / Tên bảng / Vị trí → product_name  
 - Loại hình / Loại bảng / Hình thức → type (billboard/led/digital/banner/poster/transit)
-- Địa chỉ / Vị trí đặt → location.address
-- Quận/Huyện → location.district
-- Tỉnh/Thành phố → location.city
+- ĐỊA CHỈ CẦN TÁCH RÕ RÀNG (CHỈ 2 CẤP):
+  + Số nhà → location.street_number (ví dụ: "123", "45A", "12/3")
+  + Tên đường → location.street_name (ví dụ: "Nguyễn Văn Linh", "Lê Lợi")
+  + Phường/Xã → location.ward (ví dụ: "Phường Bến Nghé", "Xã An Phú")
+  + Tỉnh/Thành phố → location.city_province (ví dụ: "TP. Hồ Chí Minh", "Hà Nội")
+- GPS nếu có → location.gps_coordinates (format: "lat,lng", ví dụ: "10.762622,106.660172")
+- Thuế địa phương nếu có → location.local_tax (phần trăm, ví dụ: 10)
+- Đơn vị tiền tệ → location.currency (VND/USD)
 - Kích thước / Size (rộng x cao) → attributes.width, attributes.height (đơn vị: mét)
 - Độ phân giải / Resolution → attributes.pixel_width x attributes.pixel_height
 - Thời lượng spot / Video duration → attributes.video_duration (giây)
@@ -55,10 +66,15 @@ Bạn là một AI chuyên trích xuất thông tin sản phẩm quảng cáo ng
       "description": "Mô tả tổng hợp từ các thông tin trong PDF",
       "location": {
         "name": "Tên vị trí ngắn gọn",
-        "address": "Địa chỉ đầy đủ",
-        "district": "Quận/Huyện",
-        "city": "Thành phố",
-        "landmark": "Điểm mốc/Hướng nhìn nếu có"
+        "address": "Địa chỉ đầy đủ (để tương thích ngược)",
+        "street_number": "Số nhà (nếu có)",
+        "street_name": "Tên đường",
+        "ward": "Phường/Xã",
+        "city_province": "Tỉnh/Thành phố",
+        "landmark": "Điểm mốc/Hướng nhìn nếu có",
+        "gps_coordinates": "lat,lng (nếu có)",
+        "currency": "VND",
+        "local_tax": null
       },
       "attributes": {
         "width": 0,
@@ -88,10 +104,31 @@ Bạn là một AI chuyên trích xuất thông tin sản phẩm quảng cáo ng
 6. Nếu có "Hướng nhìn" hoặc "View" → đưa vào landmark
 7. Nếu không tìm thấy thông tin → để giá trị mặc định
 8. type phải là 1 trong: billboard, digital, led, transit, poster, banner, other
-9. Trả về ĐÚNG định dạng JSON, KHÔNG có text thừa
+9. ĐỊA CHỈ: PHẢI tách rõ ràng thành street_number, street_name, ward, city_province (CHỈ 2 CẤP - KHÔNG CẦN district)
+   - Ví dụ: "123 Nguyễn Văn Linh, Phường Tân Phú, TP.HCM" 
+   - street_number: "123"
+   - street_name: "Nguyễn Văn Linh"  
+   - ward: "Phường Tân Phú"
+   - city_province: "TP. Hồ Chí Minh"
+10. GPS: Nếu tìm thấy tọa độ GPS → ghi vào gps_coordinates với format "lat,lng"
+11. Trả về ĐÚNG định dạng JSON, KHÔNG có text thừa
 
 **PHÂN TÍCH TÀI LIỆU SAU:**
 `
+
+// Extended location interface for AI extraction
+export interface ExtractedLocationData {
+  name: string
+  address: string              // Full address for backward compatibility
+  street_number?: string       // Số nhà
+  street_name?: string         // Tên đường
+  ward?: string                // Phường/Xã
+  city_province: string        // Tỉnh/Thành phố
+  landmark?: string
+  gps_coordinates?: string     // Format: "lat,lng"
+  currency?: string            // Default: VND
+  local_tax?: number           // Tax percentage
+}
 
 export interface ExtractedProductData {
   product_code?: string
@@ -104,13 +141,7 @@ export interface ExtractedProductData {
   booking_duration: string
   production_cost: string
   description: string
-  location: {
-    name: string
-    address: string
-    district: string
-    city: string
-    landmark: string
-  }
+  location: ExtractedLocationData
   attributes: ProductAttributes
 }
 
@@ -278,6 +309,30 @@ function normalizeProductData(data: Partial<ExtractedProductData>): ExtractedPro
     return time
   }
 
+  // Build full address from components if not provided
+  const buildFullAddress = (loc: Partial<ExtractedLocationData> | undefined): string => {
+    if (loc?.address) return loc.address
+    
+    const parts: string[] = []
+    if (loc?.street_number) parts.push(loc.street_number)
+    if (loc?.street_name) {
+      if (parts.length > 0) {
+        parts[parts.length - 1] += ' ' + loc.street_name
+      } else {
+        parts.push(loc.street_name)
+      }
+    }
+    if (loc?.ward) parts.push(loc.ward)
+    if (loc?.city_province) parts.push(loc.city_province)
+    
+    return parts.join(', ')
+  }
+
+  // Normalize location data with new structured fields
+  const rawLocation = data.location as Partial<ExtractedLocationData> | undefined
+  // Handle both old 'city' field and new 'city_province' field
+  const cityProvince = rawLocation?.city_province || (rawLocation as Record<string, unknown>)?.city as string || 'Ho Chi Minh'
+
   return {
     product_code: data.product_code || '',
     product_name: data.product_name || 'Sản phẩm chưa đặt tên',
@@ -290,11 +345,16 @@ function normalizeProductData(data: Partial<ExtractedProductData>): ExtractedPro
     production_cost: data.production_cost || '',
     description: data.description || '',
     location: {
-      name: data.location?.name || data.product_name || '',
-      address: data.location?.address || '',
-      district: data.location?.district || '',
-      city: data.location?.city || 'Ho Chi Minh',
-      landmark: data.location?.landmark || '',
+      name: rawLocation?.name || data.product_name || '',
+      address: buildFullAddress(rawLocation),
+      street_number: rawLocation?.street_number || '',
+      street_name: rawLocation?.street_name || '',
+      ward: rawLocation?.ward || '',
+      city_province: cityProvince,
+      landmark: rawLocation?.landmark || '',
+      gps_coordinates: rawLocation?.gps_coordinates || '',
+      currency: rawLocation?.currency || data.currency || 'VND',
+      local_tax: rawLocation?.local_tax ?? undefined,
     },
     attributes: {
       width: parseNumber(data.attributes?.width),
@@ -619,14 +679,25 @@ export function matchImagesByPagePosition(
 
 /**
  * Convert extracted data to CreateProductParams format
+ * Location is now embedded directly in the product (no separate location_id)
  */
 export function convertToProductParams(
   data: ExtractedProductData,
   userId: string,
   providerId: string,
-  locationId: string,
   productCode: string
 ): CreateProductParams {
+  // Parse GPS coordinates to lat/lng
+  let latitude: number | undefined
+  let longitude: number | undefined
+  if (data.location.gps_coordinates) {
+    const [lat, lng] = data.location.gps_coordinates.split(',').map(s => parseFloat(s.trim()))
+    if (!isNaN(lat) && !isNaN(lng)) {
+      latitude = lat
+      longitude = lng
+    }
+  }
+
   return {
     user_id: userId,
     product_code: productCode,
@@ -641,7 +712,110 @@ export function convertToProductParams(
     traffic: data.traffic,
     booking_duration: data.booking_duration,
     provider_id: providerId,
-    location_id: locationId,
+    // Embedded location fields
+    location_name: data.location.name,
+    location_address: data.location.address,
+    street_number: data.location.street_number,
+    street_name: data.location.street_name,
+    ward: data.location.ward,
+    city_province: data.location.city_province,
+    landmark: data.location.landmark,
+    gps_coordinates: data.location.gps_coordinates,
+    latitude,
+    longitude,
+    local_tax: data.location.local_tax,
+    attributes: data.attributes,
+    description: data.description,
+  }
+}
+
+/**
+ * Convert extracted data to CreateProductParams with automatic GPS geocoding
+ * This async version will attempt to geocode the address if GPS is not provided
+ */
+export async function convertToProductParamsWithGeocoding(
+  data: ExtractedProductData,
+  userId: string,
+  providerId: string,
+  productCode: string
+): Promise<CreateProductParams> {
+  let latitude: number | undefined
+  let longitude: number | undefined
+  let gps_coordinates = data.location.gps_coordinates
+
+  // If GPS coordinates already provided, parse them
+  if (gps_coordinates) {
+    const [lat, lng] = gps_coordinates.split(',').map(s => parseFloat(s.trim()))
+    if (!isNaN(lat) && !isNaN(lng) && isValidVietnamCoordinates(lat, lng)) {
+      latitude = lat
+      longitude = lng
+      console.log(`✅ Using provided GPS: ${lat}, ${lng}`)
+    } else {
+      console.warn(`⚠️ Invalid GPS coordinates provided: ${gps_coordinates}`)
+      gps_coordinates = undefined
+    }
+  }
+
+  // If no valid GPS, try to geocode from address
+  if (!latitude || !longitude) {
+    const fullAddress = buildGeoAddress(
+      data.location.street_number,
+      data.location.street_name,
+      data.location.ward,
+      data.location.city_province
+    )
+
+    if (fullAddress && fullAddress.length > 5) {
+      console.log(`🔍 Geocoding address: ${fullAddress}`)
+      
+      try {
+        const geocodeResult = await geocodeAddress(fullAddress)
+        
+        if (geocodeResult && isValidVietnamCoordinates(geocodeResult.latitude, geocodeResult.longitude)) {
+          latitude = geocodeResult.latitude
+          longitude = geocodeResult.longitude
+          gps_coordinates = formatGPSCoordinates(latitude, longitude)
+          console.log(`✅ Geocoded successfully (${geocodeResult.provider}): ${latitude}, ${longitude}`)
+        } else {
+          console.warn(`⚠️ Geocoding failed or returned invalid coordinates`)
+        }
+      } catch (error) {
+        console.error(`❌ Geocoding error:`, error)
+      }
+    }
+  }
+
+  return {
+    user_id: userId,
+    product_code: productCode,
+    product_name: data.product_name,
+    type: data.type,
+    areas: data.areas,
+    status: 1,
+    images: [],
+    cost: data.cost,
+    production_cost: data.production_cost,
+    currency: data.currency,
+    traffic: data.traffic,
+    booking_duration: data.booking_duration,
+    provider_id: providerId,
+    // Embedded location fields with geocoded coordinates
+    location_name: data.location.name,
+    location_address: data.location.address || buildGeoAddress(
+      data.location.street_number,
+      data.location.street_name,
+      data.location.ward,
+      data.location.city_province
+    ),
+    street_number: data.location.street_number,
+    street_name: data.location.street_name,
+    ward: data.location.ward,
+    city_province: data.location.city_province,
+    landmark: data.location.landmark,
+    gps_coordinates,
+    latitude,
+    longitude,
+    local_tax: data.location.local_tax,
     attributes: data.attributes,
     description: data.description,
   }

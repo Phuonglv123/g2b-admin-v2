@@ -55,7 +55,7 @@ const Header = ({ sidebarCollapsed }: HeaderProps) => {
   return (
     <header
       className={cn(
-        "fixed right-0 top-0 z-30 flex h-20 items-center justify-between px-8 transition-all duration-300",
+        "fixed right-0 top-0 z-30 flex h-20 items-center justify-between px-8 transition-all duration-300 bg-background/95 data-[state=scrolled]:backdrop-blur border-b border-border/40 supports-[backdrop-filter]:bg-background/60",
         sidebarCollapsed ? "left-[72px]" : "left-[240px]"
       )}
     >

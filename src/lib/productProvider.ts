@@ -4,9 +4,6 @@ import type {
   ProductWithRelations,
   CreateProductParams, 
   UpdateProductParams,
-  Location,
-  CreateLocationParams,
-  UpdateLocationParams,
   ProductStats,
   ProductFilters
 } from '@/types/product'
@@ -27,7 +24,7 @@ export async function getProducts(filters?: ProductFilters): Promise<ProductWith
   // Apply filters
   if (filters) {
     if (filters.search) {
-      query = query.or(`product_name.ilike.%${filters.search}%,product_code.ilike.%${filters.search}%`)
+      query = query.or(`product_name.ilike.%${filters.search}%,product_code.ilike.%${filters.search}%,location_name.ilike.%${filters.search}%,location_address.ilike.%${filters.search}%`)
     }
     if (filters.type && filters.type !== 'all') {
       query = query.eq('type', filters.type)
@@ -35,8 +32,13 @@ export async function getProducts(filters?: ProductFilters): Promise<ProductWith
     if (filters.status !== undefined && filters.status !== 'all') {
       query = query.eq('status', filters.status)
     }
-    if (filters.location_city && filters.location_city !== 'all') {
-      query = query.eq('location_city', filters.location_city)
+    // Filter by city/province (location embedded in products)
+    if (filters.city_province && filters.city_province !== 'all') {
+      query = query.eq('city_province', filters.city_province)
+    }
+    // Filter by ward
+    if (filters.ward && filters.ward !== 'all') {
+      query = query.eq('ward', filters.ward)
     }
     if (filters.provider_id && filters.provider_id !== 'all') {
       query = query.eq('provider_id', filters.provider_id)
@@ -84,12 +86,32 @@ export async function getRawProductById(id: string): Promise<Product> {
 }
 
 /**
- * Create a new product
+ * Create a new product with embedded location
  */
 export async function createProduct(params: CreateProductParams): Promise<Product> {
+  // Build location_address from components if not provided
+  let location_address = params.location_address
+  if (!location_address && (params.street_number || params.street_name || params.ward || params.city_province)) {
+    const parts: string[] = []
+    if (params.street_number) parts.push(params.street_number)
+    if (params.street_name) {
+      if (parts.length > 0) {
+        parts[parts.length - 1] += ' ' + params.street_name
+      } else {
+        parts.push(params.street_name)
+      }
+    }
+    if (params.ward) parts.push(params.ward)
+    if (params.city_province) parts.push(params.city_province)
+    location_address = parts.join(', ')
+  }
+
   const { data, error } = await supabase
     .from('products')
-    .insert([params])
+    .insert([{
+      ...params,
+      location_address,
+    }])
     .select()
     .single()
 
@@ -101,9 +123,31 @@ export async function createProduct(params: CreateProductParams): Promise<Produc
  * Update a product
  */
 export async function updateProduct({ id, ...params }: UpdateProductParams): Promise<Product> {
+  // Rebuild location_address if location components changed
+  let location_address = params.location_address
+  if (params.street_number !== undefined || params.street_name !== undefined || params.ward !== undefined || params.city_province !== undefined) {
+    const parts: string[] = []
+    if (params.street_number) parts.push(params.street_number)
+    if (params.street_name) {
+      if (parts.length > 0) {
+        parts[parts.length - 1] += ' ' + params.street_name
+      } else {
+        parts.push(params.street_name)
+      }
+    }
+    if (params.ward) parts.push(params.ward)
+    if (params.city_province) parts.push(params.city_province)
+    if (parts.length > 0) {
+      location_address = parts.join(', ')
+    }
+  }
+
   const { data, error } = await supabase
     .from('products')
-    .update(params)
+    .update({
+      ...params,
+      ...(location_address && { location_address }),
+    })
     .eq('id', id)
     .select()
     .single()
@@ -168,96 +212,59 @@ export async function generateProductCode(type: string): Promise<string> {
 }
 
 // =============================================
-// LOCATION CRUD OPERATIONS
+// LOCATION FILTER HELPERS
 // =============================================
 
 /**
- * Get all locations
+ * Get unique cities/provinces from products
  */
-export async function getLocations(): Promise<Location[]> {
+export async function getProductCities(): Promise<string[]> {
   const { data, error } = await supabase
-    .from('locations')
-    .select('*')
-    .order('city', { ascending: true })
-    .order('name', { ascending: true })
-
-  if (error) throw error
-  return data as Location[]
-}
-
-/**
- * Get location by ID
- */
-export async function getLocationById(id: string): Promise<Location> {
-  const { data, error } = await supabase
-    .from('locations')
-    .select('*')
-    .eq('id', id)
-    .single()
-
-  if (error) throw error
-  return data as Location
-}
-
-/**
- * Create a new location
- */
-export async function createLocation(params: CreateLocationParams): Promise<Location> {
-  // Insert without select first to avoid URL encoding issues
-  const { data, error } = await supabase
-    .from('locations')
-    .insert(params)
-    .select('*')
-    .single()
-
-  if (error) {
-    console.error('Create location error:', error)
-    throw error
-  }
-  return data as Location
-}
-
-/**
- * Update a location
- */
-export async function updateLocation({ id, ...params }: UpdateLocationParams): Promise<Location> {
-  const { data, error } = await supabase
-    .from('locations')
-    .update(params)
-    .eq('id', id)
-    .select()
-    .single()
-
-  if (error) throw error
-  return data as Location
-}
-
-/**
- * Delete a location
- */
-export async function deleteLocation(id: string): Promise<boolean> {
-  const { error } = await supabase
-    .from('locations')
-    .delete()
-    .eq('id', id)
-
-  if (error) throw error
-  return true
-}
-
-/**
- * Get unique cities from locations
- */
-export async function getLocationCities(): Promise<string[]> {
-  const { data, error } = await supabase
-    .from('locations')
-    .select('city')
-    .order('city', { ascending: true })
+    .from('products')
+    .select('city_province')
+    .not('city_province', 'is', null)
+    .order('city_province', { ascending: true })
 
   if (error) throw error
   
-  const cities = [...new Set((data || []).map((l: { city: string }) => l.city))] as string[]
+  const cities = [...new Set((data || []).map((p: { city_province: string }) => p.city_province))] as string[]
   return cities
+}
+
+/**
+ * Get unique wards from products (optionally filtered by city)
+ */
+export async function getProductWards(cityProvince?: string): Promise<string[]> {
+  let query = supabase
+    .from('products')
+    .select('ward')
+    .not('ward', 'is', null)
+    .order('ward', { ascending: true })
+
+  if (cityProvince) {
+    query = query.eq('city_province', cityProvince)
+  }
+
+  const { data, error } = await query
+
+  if (error) throw error
+  
+  const wards = [...new Set((data || []).map((p: { ward: string }) => p.ward))] as string[]
+  return wards
+}
+
+/**
+ * Search products by location text
+ */
+export async function searchProductsByLocation(searchText: string): Promise<ProductWithRelations[]> {
+  const { data, error } = await supabase
+    .from('products_view')
+    .select('*')
+    .or(`location_name.ilike.%${searchText}%,location_address.ilike.%${searchText}%,ward.ilike.%${searchText}%,city_province.ilike.%${searchText}%,street_name.ilike.%${searchText}%,landmark.ilike.%${searchText}%`)
+    .order('created_at', { ascending: false })
+
+  if (error) throw error
+  return data as ProductWithRelations[]
 }
 
 // =============================================
@@ -322,4 +329,29 @@ export function getDefaultAttributes() {
     quantity_of_ad: 1,
     lighting: 1
   }
+}
+
+/**
+ * Build full location address from components
+ */
+export function buildLocationAddress(
+  streetNumber?: string | null,
+  streetName?: string | null,
+  ward?: string | null,
+  cityProvince?: string | null
+): string {
+  const parts: string[] = []
+  
+  if (streetNumber) parts.push(streetNumber)
+  if (streetName) {
+    if (parts.length > 0) {
+      parts[parts.length - 1] += ' ' + streetName
+    } else {
+      parts.push(streetName)
+    }
+  }
+  if (ward) parts.push(ward)
+  if (cityProvince) parts.push(cityProvince)
+  
+  return parts.join(', ')
 }

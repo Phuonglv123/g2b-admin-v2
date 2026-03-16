@@ -103,10 +103,10 @@ export async function uploadImagesToStorage(
     try {
       const fileName = `${folderName}/${timestamp}_page_${image.pageNumber}.jpg`
       
-      // Upload to Supabase Storage
+      // Upload to Supabase Storage (bucket: g2b, folder: products)
       const { error } = await supabase.storage
-        .from('product-images')
-        .upload(fileName, image.blob, {
+        .from('g2b')
+        .upload(`products/${fileName}`, image.blob, {
           contentType: 'image/jpeg',
           cacheControl: '3600',
           upsert: true,
@@ -119,8 +119,8 @@ export async function uploadImagesToStorage(
       
       // Get public URL
       const { data: urlData } = supabase.storage
-        .from('product-images')
-        .getPublicUrl(fileName)
+        .from('g2b')
+        .getPublicUrl(`products/${fileName}`)
       
       if (urlData?.publicUrl) {
         uploadedUrls.push(urlData.publicUrl)

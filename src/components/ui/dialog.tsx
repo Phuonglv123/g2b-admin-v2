@@ -1,4 +1,5 @@
 import * as React from "react"
+import { createPortal } from "react-dom"
 import { cn } from "@/lib/utils"
 import { X } from "lucide-react"
 
@@ -11,20 +12,21 @@ interface DialogProps {
 const Dialog = ({ open, onOpenChange, children }: DialogProps) => {
   if (!open) return null
 
-  return (
-    <div className="fixed inset-0 z-50">
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-start justify-center sm:items-center">
       {/* Backdrop */}
       <div 
-        className="fixed inset-0 bg-black/50 backdrop-blur-sm" 
+        className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm transition-all duration-100 data-[state=closed]:animate-out data-[state=closed]:fade-out data-[state=open]:fade-in"
         onClick={() => onOpenChange(false)}
       />
       {/* Content */}
-      <div className="fixed inset-0 overflow-y-auto">
-        <div className="flex min-h-full items-center justify-center p-4">
+      <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto">
+        <div className="flex min-h-full w-full items-center justify-center p-4 text-center sm:p-0">
           {children}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }
 

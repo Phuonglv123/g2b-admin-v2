@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react"
+import { createPortal } from "react-dom"
 import {
   Plus,
   Search,
@@ -60,14 +61,14 @@ interface ModalProps {
 const Modal = ({ isOpen, onClose, title, children }: ModalProps) => {
   if (!isOpen) return null
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-start justify-center sm:items-center">
       <div 
-        className="absolute inset-0 bg-black/60 backdrop-blur-sm" 
+        className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm transition-opacity" 
         onClick={onClose}
       />
-      <div className="relative z-10 w-full max-w-md rounded-2xl bg-card border border-border p-6 shadow-2xl">
-        <div className="mb-6 flex items-center justify-between">
+      <div className="relative z-50 w-full max-w-md rounded-2xl bg-card border border-border p-6 shadow-2xl m-4 sm:m-0 max-h-[90vh] overflow-y-auto">
+        <div className="mb-6 flex items-center justify-between sticky top-0 bg-card z-10 pb-2">
           <h2 className="text-xl font-bold">{title}</h2>
           <button
             onClick={onClose}
@@ -78,7 +79,8 @@ const Modal = ({ isOpen, onClose, title, children }: ModalProps) => {
         </div>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }
 
