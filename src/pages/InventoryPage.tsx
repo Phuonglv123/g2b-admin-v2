@@ -112,6 +112,15 @@ const InventoryPage = () => {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [aiError, setAiError] = useState<string | null>(null)
 
+  // AI Import progress state
+  const [importProgress, setImportProgress] = useState<{
+    isImporting: boolean
+    step: string
+    current: number
+    total: number
+    productName?: string
+  }>({ isImporting: false, step: '', current: 0, total: 0 })
+
   // Location form state (embedded in product)
   const [locationData, setLocationData] = useState<VietnamAddress>({})
   const [gpsCoordinates, setGpsCoordinates] = useState('')
@@ -404,6 +413,7 @@ const InventoryPage = () => {
     try {
       setIsSubmitting(true)
       setAiError(null)
+      setImportProgress({ isImporting: true, step: 'Initializing...', current: 0, total: data.products.length })
 
       console.log('🚀 Starting AI extraction process...')
       console.log('📄 File:', file.name, file.type, `(${(file.size / 1024).toFixed(1)} KB)`)
@@ -411,6 +421,7 @@ const InventoryPage = () => {
       console.log('📦 Products found:', data.products.length)
 
       // 1. Find or create provider from the PDF
+      setImportProgress(p => ({ ...p, step: 'Setting up provider...' }))
       const provider = await findOrCreateProvider(data.provider_name, user.id)
       console.log('✅ Provider ready:', provider.name, provider.id)
       
@@ -419,6 +430,7 @@ const InventoryPage = () => {
       setProviders(updatedProviders)
 
       // 2. Extract images from PDF using ConvertAPI
+      setImportProgress(p => ({ ...p, step: 'Extracting images from PDF...' }))
       let imageUrls: string[] = []
       if (file.type === 'application/pdf') {
         try {
@@ -488,6 +500,13 @@ const InventoryPage = () => {
       for (let i = 0; i < data.products.length; i++) {
         const productData = data.products[i]
         const productImages = productImageMap.get(productData.product_name) || []
+        setImportProgress({
+          isImporting: true,
+          step: 'Saving products to database...',
+          current: i + 1,
+          total: data.products.length,
+          productName: productData.product_name
+        })
         console.log(`📝 Processing product ${i + 1}/${data.products.length}: ${productData.product_name} (${productImages.length} images)`)
         await processExtractedProduct(productData, provider.id, productImages)
       }
@@ -513,6 +532,7 @@ const InventoryPage = () => {
       setAiError(error instanceof Error ? error.message : 'Unknown error')
     } finally {
       setIsSubmitting(false)
+      setImportProgress({ isImporting: false, step: '', current: 0, total: 0 })
     }
   }
 
@@ -1547,12 +1567,19 @@ const InventoryPage = () => {
       </Dialog>
 
       {/* AI Upload Dialog */}
-      <Dialog open={isAIUploadOpen} onOpenChange={setIsAIUploadOpen}>
+      <Dialog open={isAIUploadOpen} onOpenChange={(open) => {
+        if (!importProgress.isImporting) {
+          setIsAIUploadOpen(open)
+          if (!open) setAiError(null)
+        }
+      }}>
         <DialogContent
           className="max-w-2xl max-h-[90vh] overflow-y-auto"
           onClose={() => {
-            setIsAIUploadOpen(false)
-            setAiError(null)
+            if (!importProgress.isImporting) {
+              setIsAIUploadOpen(false)
+              setAiError(null)
+            }
           }}
         >
           <DialogHeader>
@@ -1563,10 +1590,42 @@ const InventoryPage = () => {
           </DialogHeader>
 
           <div className="py-4">
-            <p className="text-sm text-muted-foreground mb-4">
-              Upload a PDF or image file containing product information. Gemini AI will automatically
-              extract and fill in the form.
-            </p>
+            {/* Import Progress Overlay */}
+            {importProgress.isImporting && (
+              <div className="mb-4 p-4 rounded-lg bg-primary/10 border border-primary/30">
+                <div className="flex items-center gap-3 mb-3">
+                  <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                  <span className="font-medium text-primary">Importing Products...</span>
+                </div>
+                <p className="text-sm text-muted-foreground mb-2">{importProgress.step}</p>
+                {importProgress.total > 0 && (
+                  <>
+                    <div className="flex justify-between text-xs text-muted-foreground mb-1">
+                      <span>Progress: {importProgress.current} / {importProgress.total}</span>
+                      <span>{Math.round((importProgress.current / importProgress.total) * 100)}%</span>
+                    </div>
+                    <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
+                      <div 
+                        className="h-full bg-primary transition-all duration-300"
+                        style={{ width: `${(importProgress.current / importProgress.total) * 100}%` }}
+                      />
+                    </div>
+                    {importProgress.productName && (
+                      <p className="text-xs text-muted-foreground mt-2 truncate">
+                        Current: {importProgress.productName}
+                      </p>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
+            {!importProgress.isImporting && (
+              <p className="text-sm text-muted-foreground mb-4">
+                Upload a PDF or image file containing product information. Gemini AI will automatically
+                extract and fill in the form.
+              </p>
+            )}
 
             {aiError && (
               <div className="mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-500 text-sm">
@@ -1577,7 +1636,7 @@ const InventoryPage = () => {
             <PDFUploadExtractor
               onExtracted={handleAIExtracted}
               onError={handleAIError}
-              disabled={isSubmitting}
+              disabled={isSubmitting || importProgress.isImporting}
             />
           </div>
 
@@ -1585,11 +1644,14 @@ const InventoryPage = () => {
             <Button
               variant="outline"
               onClick={() => {
-                setIsAIUploadOpen(false)
-                setAiError(null)
+                if (!importProgress.isImporting) {
+                  setIsAIUploadOpen(false)
+                  setAiError(null)
+                }
               }}
+              disabled={importProgress.isImporting}
             >
-              Close
+              {importProgress.isImporting ? 'Please wait...' : 'Close'}
             </Button>
           </DialogFooter>
         </DialogContent>
