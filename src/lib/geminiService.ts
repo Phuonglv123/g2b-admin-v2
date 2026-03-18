@@ -218,8 +218,8 @@ export async function extractProductFromFile(file: File): Promise<ExtractionResu
     // Convert file to base64
     const base64Data = await fileToBase64(file)
 
-    // Initialize model - using Gemini 3.1 Pro Preview (mạnh nhất)
-    const model = genAI.getGenerativeModel({ model: 'gemini-3.1-pro-preview' })
+    // Initialize model - using Gemini 2.0 Flash
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' })
 
     // Prepare the file part for Gemini
     const filePart = {
@@ -515,8 +515,8 @@ export async function matchImageToProduct(
       reader.readAsDataURL(blob)
     })
 
-    // Initialize model - use gemini-1.5-flash (available model)
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' })
+    // Initialize model - use gemini-2.0-flash
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' })
 
     // Prepare image part
     const imagePart = {
