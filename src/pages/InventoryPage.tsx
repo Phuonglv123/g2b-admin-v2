@@ -20,6 +20,7 @@ import {
   DollarSign,
   Maximize2,
   Sparkles,
+  Calendar,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -743,11 +744,13 @@ const InventoryPage = () => {
             <thead className="bg-muted/50">
               <tr>
                 <th className="px-4 py-3 text-left text-sm font-medium">Product</th>
+                <th className="px-4 py-3 text-left text-sm font-medium">Code</th>
                 <th className="px-4 py-3 text-left text-sm font-medium">Location</th>
                 <th className="px-4 py-3 text-left text-sm font-medium">Type</th>
                 <th className="px-4 py-3 text-left text-sm font-medium">Size</th>
                 <th className="px-4 py-3 text-left text-sm font-medium">Price</th>
                 <th className="px-4 py-3 text-left text-sm font-medium">Provider</th>
+                <th className="px-4 py-3 text-left text-sm font-medium">Created</th>
                 <th className="px-4 py-3 text-left text-sm font-medium">Status</th>
                 <th className="px-4 py-3 text-right text-sm font-medium">Actions</th>
               </tr>
@@ -781,7 +784,6 @@ const InventoryPage = () => {
                         )}
                         <div>
                           <p className="font-medium">{product.product_name}</p>
-                          <p className="text-xs text-muted-foreground">{product.product_code}</p>
                           {hasImages && (
                             <p className="text-xs text-muted-foreground">
                               <ImageIcon className="inline h-3 w-3 mr-1" />
@@ -790,6 +792,11 @@ const InventoryPage = () => {
                           )}
                         </div>
                       </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <code className="text-xs bg-muted px-2 py-1 rounded font-mono">
+                        {product.product_code}
+                      </code>
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2 text-sm">
@@ -811,6 +818,20 @@ const InventoryPage = () => {
                       <p className="text-xs text-muted-foreground">/{product.booking_duration}</p>
                     </td>
                     <td className="px-4 py-3 text-sm">{product.provider_name}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                        <Calendar className="h-3.5 w-3.5" />
+                        <span>
+                          {product.created_at
+                            ? new Date(product.created_at).toLocaleDateString('vi-VN', {
+                                day: '2-digit',
+                                month: '2-digit',
+                                year: 'numeric',
+                              })
+                            : '-'}
+                        </span>
+                      </div>
+                    </td>
                     <td className="px-4 py-3">
                       <span
                         className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${statusStyles[product.status]}`}
