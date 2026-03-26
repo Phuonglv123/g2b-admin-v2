@@ -3,6 +3,9 @@
 -- This function allows admins to create new users
 -- =============================================
 
+-- Enable pgcrypto extension for password hashing (gen_salt, crypt)
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 -- Function to create a new user (Admin only)
 CREATE OR REPLACE FUNCTION public.create_user(
   p_email TEXT,

@@ -7,6 +7,7 @@ import ClientsPage from "@/pages/ClientsPage"
 import CustomersPage from "@/pages/CustomersPage"
 import HomePage from "@/pages/HomePage"
 import InventoryPage from "@/pages/InventoryPage"
+import ImportPage from "@/pages/ImportPage"
 import LoginPage from "@/pages/LoginPage"
 import NotFoundPage from "@/pages/NotFoundPage"
 import SettingsPage from "@/pages/SettingsPage"
@@ -33,6 +34,8 @@ const AppRouter = () => {
           <Route path="settings" element={<SettingsPage />} />
           <Route path="support" element={<SupportPage />} />
         </Route>
+        {/* Import page - full screen without sidebar */}
+        <Route path="import" element={<ImportPage />} />
       </Route>
 
       {/* Admin only routes */}

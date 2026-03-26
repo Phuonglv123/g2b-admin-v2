@@ -93,3 +93,28 @@ npx shadcn@latest add dialog
 ## License
 
 MIT
+
+## AI-Powered PDF Extraction
+
+This project uses Claude AI for intelligent document extraction. The architecture consists of:
+
+1. **Claude Proxy Server** (`/server`) - A Node.js/Express server that handles Claude API communication
+2. **Modern PDF Uploader** - A beautiful UI component for uploading and analyzing documents
+
+### Running the AI extraction feature
+
+```bash
+# 1. Set up the proxy server
+cd server
+cp .env.example .env
+# Edit .env and add your ANTHROPIC_API_KEY
+
+# 2. Start the proxy server
+npm install
+npm start
+
+# 3. Or use Docker Compose (from project root)
+docker-compose up -d
+```
+
+See `/server/README.md` for detailed setup instructions.

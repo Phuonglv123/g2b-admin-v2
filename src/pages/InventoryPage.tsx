@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Plus,
   Search,
@@ -49,12 +50,12 @@ import {
 } from '@/lib/productProvider'
 import { getProviders, findOrCreateProvider } from '@/lib/customerProvider'
 import { useAuth } from '@/contexts/AuthContext'
-import { PDFUploadExtractor, ImageEditor } from '@/components/inventory'
+import { ModernPDFUploader, ImageEditor } from '@/components/inventory'
 import { VietnamAddressSelector } from '@/components/location'
 import { convertAndUploadPdfImages } from '@/lib/convertApiService'
 import { supabase } from '@/lib/supabase'
-import { matchImagesByPagePosition } from '@/lib/geminiService'
-import type { ExtractedPDFData, ExtractedProductData } from '@/lib/geminiService'
+import { matchImagesByPagePosition } from '@/lib/claudeService'
+import type { ExtractedPDFData, ExtractedProductData } from '@/lib/claudeService'
 import type {
   ProductWithRelations,
   CreateProductParams,
@@ -86,6 +87,7 @@ const statusStyles: Record<ProductStatus, string> = {
 
 const InventoryPage = () => {
   const { user } = useAuth()
+  const navigate = useNavigate()
   const [products, setProducts] = useState<ProductWithRelations[]>([])
   const [cities, setCities] = useState<string[]>([])
   const [providers, setProviders] = useState<Provider[]>([])
@@ -626,7 +628,7 @@ const InventoryPage = () => {
           <p className="text-muted-foreground">Manage all advertising locations</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => setIsAIUploadOpen(true)}>
+          <Button variant="outline" onClick={() => navigate('/import')}>
             <Sparkles className="mr-2 h-4 w-4" />
             Import with AI
           </Button>
@@ -1622,7 +1624,7 @@ const InventoryPage = () => {
 
             {!importProgress.isImporting && (
               <p className="text-sm text-muted-foreground mb-4">
-                Upload a PDF or image file containing product information. Gemini AI will automatically
+                Upload a PDF or image file containing product information. Claude AI will automatically
                 extract and fill in the form.
               </p>
             )}
@@ -1633,7 +1635,7 @@ const InventoryPage = () => {
               </div>
             )}
 
-            <PDFUploadExtractor
+            <ModernPDFUploader
               onExtracted={handleAIExtracted}
               onError={handleAIError}
               disabled={isSubmitting || importProgress.isImporting}

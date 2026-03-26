@@ -1,0 +1,23 @@
+{
+  "name": "claude-proxy-server",
+  "version": "1.0.0",
+  "description": "Proxy server for Claude AI API to extract data from PDF/images",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.52.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.5.0",
+    "express": "^5.1.0",
+    "multer": "^2.0.0",
+    "pdf-parse": "^1.1.1",
+    "sharp": "^0.34.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
