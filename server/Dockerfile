@@ -1,20 +1,24 @@
 # Claude Proxy Server Dockerfile
-FROM node:20-alpine
+# Use full Node image instead of alpine for better native module support
+FROM node:20-slim
 
-# Install dependencies for sharp
-RUN apk add --no-cache \
+# Install dependencies for sharp and other native modules
+RUN apt-get update && apt-get install -y \
     python3 \
     make \
     g++ \
-    vips-dev
+    libvips42 \
+    libvips-dev \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 # Copy package files
 COPY package.json package-lock.json* ./
 
-# Install dependencies
-RUN npm ci --only=production
+# Install dependencies - use npm install instead of npm ci for better compatibility
+RUN npm install --omit=dev
 
 # Copy source code
 COPY . .
