@@ -41,8 +41,14 @@ Bạn là một AI chuyên trích xuất thông tin sản phẩm quảng cáo ng
 - Tần suất / Frequency → attributes.frequency
 - Số mặt / Sides → attributes.add_side
 - Chiếu sáng / Lighting → attributes.lighting (1=có, 0=không)
-- Lưu lượng / Traffic → traffic
-- Đơn giá / Giá thuê / Price → cost (chỉ lấy số, bỏ ký tự)
+- Lưu lượng / Traffic → traffic (ĐÂY LÀ LƯU LƯỢNG GIAO THÔNG, KHÔNG PHẢI GIÁ)
+  + Bao gồm các ký hiệu: OTC (ô tô con), VAC (vận tải các loại), xe máy, xe tải, người đi bộ...
+  + Ví dụ: "50.000 OTC/ngày", "OTC/VAC: 120.000", "Traffic: 80.000 lượt/ngày", "Lưu lượng: cao"
+  + Nếu thấy dòng có chữ "traffic", "lưu lượng", "OTC", "VAC" → ĐƯA VÀO traffic, KHÔNG PHẢI cost
+  + Giữ nguyên text gốc bao gồm cả đơn vị (OTC, VAC, lượt/ngày...)
+- Đơn giá / Giá thuê / Price / Rental Rate → cost (chỉ lấy số, bỏ ký tự)
+  + PHẢI có từ khóa liên quan đến GIÁ/CHI PHÍ: "đơn giá", "giá thuê", "price", "rate", "rental", "VND/tháng", "USD/tháng"
+  + KHÔNG ĐƯỢC nhầm lưu lượng giao thông (traffic/OTC/VAC) thành giá
 - Đơn vị tiền / Currency → currency (VND/USD)
 - Thời hạn thuê / Duration → booking_duration
 - Chi phí thi công / Production cost → production_cost
@@ -111,7 +117,12 @@ Bạn là một AI chuyên trích xuất thông tin sản phẩm quảng cáo ng
    - ward: "Phường Tân Phú"
    - city_province: "TP. Hồ Chí Minh"
 10. GPS: Nếu tìm thấy tọa độ GPS → ghi vào gps_coordinates với format "lat,lng"
-11. Trả về ĐÚNG định dạng JSON, KHÔNG có text thừa
+11. **QUAN TRỌNG - PHÂN BIỆT TRAFFIC VÀ GIÁ:**
+   - Nếu thấy số kèm "OTC", "VAC", "traffic", "lưu lượng", "lượt/ngày", "xe/ngày" → đưa vào field "traffic" (giữ nguyên text)
+   - Nếu thấy số kèm "VND", "USD", "đồng", "giá", "thuê", "price", "rate", "/tháng", "/năm" → đưa vào field "cost" (chỉ lấy số)
+   - Ví dụ: "OTC/VAC: 120.000" → traffic: "OTC/VAC: 120.000" (KHÔNG PHẢI cost)
+   - Ví dụ: "Giá thuê: 120.000.000 VND/tháng" → cost: 120000000
+12. Trả về ĐÚNG định dạng JSON, KHÔNG có text thừa
 
 **PHÂN TÍCH TÀI LIỆU SAU:**
 `

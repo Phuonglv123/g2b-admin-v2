@@ -18,15 +18,15 @@ const ChartCard = ({
   return (
     <div
       className={cn(
-        "rounded-2xl bg-card border border-border",
+        "rounded-xl bg-card border border-border/50",
         className
       )}
     >
-      <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+      <div className="flex items-center justify-between px-5 py-4 border-b border-border/30">
         <div>
-          <h3 className="font-semibold">{title}</h3>
+          <h3 className="text-sm font-semibold">{title}</h3>
           {subtitle && (
-            <p className="text-sm text-muted-foreground">{subtitle}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">{subtitle}</p>
           )}
         </div>
         {actions && <div className="flex items-center gap-2">{actions}</div>}

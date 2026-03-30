@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Docker và Docker Compose đã được cài đặt trên server
-- Các API keys cho Supabase và Gemini
+- Các API keys cho Supabase và Claude AI (Anthropic)
 
 ## Cấu trúc files
 
@@ -30,7 +30,7 @@ Chỉnh sửa file `.env` với các giá trị thực:
 ```env
 VITE_SUPABASE_URL=https://your-project.supabase.co
 VITE_SUPABASE_ANON_KEY=your_anon_key
-VITE_GEMINI_API_KEY=your_gemini_api_key
+VITE_CLAUDE_PROXY_URL=http://localhost:3001
 ```
 
 ### 2. Build và Run với Docker Compose
@@ -53,7 +53,7 @@ docker compose down
 docker build \
   --build-arg VITE_SUPABASE_URL=your_url \
   --build-arg VITE_SUPABASE_ANON_KEY=your_key \
-  --build-arg VITE_GEMINI_API_KEY=your_gemini_key \
+  --build-arg VITE_CLAUDE_PROXY_URL=http://localhost:3001 \
   -t g2b-admin-v2 .
 
 # Run container

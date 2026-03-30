@@ -11,7 +11,7 @@ import {
   Image as ImageIcon,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { extractProductFromFile, type ExtractedPDFData, type ExtractionResult } from '@/lib/geminiService'
+import { extractProductFromFile, type ExtractedPDFData, type ExtractionResult } from '@/lib/claudeService'
 
 interface PDFUploadExtractorProps {
   onExtracted: (data: ExtractedPDFData, file: File) => void
@@ -205,7 +205,7 @@ export const PDFUploadExtractor = ({
           </div>
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <Sparkles className="h-4 w-4 text-yellow-500" />
-            <span>Using Gemini AI for automatic extraction</span>
+            <span>Using Claude AI for automatic extraction</span>
           </div>
         </div>
       </div>

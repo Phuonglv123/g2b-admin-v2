@@ -21,24 +21,22 @@ const StatCard = ({
   return (
     <div
       className={cn(
-        "rounded-2xl bg-card border border-border p-5 transition-all hover:bg-card/80",
+        "group rounded-xl bg-card border border-border/50 p-5 transition-all duration-200 hover:border-border hover:shadow-lg hover:shadow-black/5",
         className
       )}
     >
-      <div className="flex items-start justify-between">
-        {/* Icon */}
+      <div className="flex items-center justify-between">
         {icon && (
-          <div className="rounded-xl bg-secondary p-3 text-muted-foreground">
+          <div className="rounded-lg bg-primary/10 p-2.5 text-primary transition-colors group-hover:bg-primary/15">
             {icon}
           </div>
         )}
-        {/* Change Badge */}
         {change !== undefined && (
           <span
             className={cn(
-              "rounded-full px-2 py-1 text-xs font-medium",
-              isPositive && "bg-green-500/20 text-green-400",
-              isNegative && "bg-red-500/20 text-red-400",
+              "inline-flex items-center gap-0.5 rounded-md px-2 py-0.5 text-xs font-medium",
+              isPositive && "bg-emerald-500/10 text-emerald-400",
+              isNegative && "bg-red-500/10 text-red-400",
               !isPositive && !isNegative && "bg-muted text-muted-foreground"
             )}
           >
@@ -49,8 +47,8 @@ const StatCard = ({
         )}
       </div>
       <div className="mt-4">
-        <p className="text-sm text-muted-foreground">{title}</p>
-        <p className="mt-1 text-3xl font-bold tracking-tight">{value}</p>
+        <p className="text-[13px] font-medium text-muted-foreground">{title}</p>
+        <p className="mt-1 text-2xl font-bold tracking-tight">{value}</p>
       </div>
     </div>
   )

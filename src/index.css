@@ -41,6 +41,10 @@
 
   --animate-accordion-down: accordion-down 0.2s ease-out;
   --animate-accordion-up: accordion-up 0.2s ease-out;
+  --animate-fade-in: fade-in 0.3s ease-out;
+  --animate-slide-up: slide-up 0.3s ease-out;
+  --animate-slide-down: slide-down 0.3s ease-out;
+  --animate-scale-in: scale-in 0.2s ease-out;
 
   @keyframes accordion-down {
     from { height: 0 }
@@ -50,63 +54,57 @@
     from { height: var(--radix-accordion-content-height) }
     to { height: 0 }
   }
+  @keyframes fade-in {
+    from { opacity: 0 }
+    to { opacity: 1 }
+  }
+  @keyframes slide-up {
+    from { opacity: 0; transform: translateY(8px) }
+    to { opacity: 1; transform: translateY(0) }
+  }
+  @keyframes slide-down {
+    from { opacity: 0; transform: translateY(-8px) }
+    to { opacity: 1; transform: translateY(0) }
+  }
+  @keyframes scale-in {
+    from { opacity: 0; transform: scale(0.95) }
+    to { opacity: 1; transform: scale(1) }
+  }
 }
 
 @layer base {
   :root {
-    /* MediaFlow Dark Theme - Orange Accent */
-    --background: 220 20% 10%;
-    --foreground: 0 0% 95%;
-    --card: 220 20% 13%;
-    --card-foreground: 0 0% 95%;
-    --popover: 220 20% 13%;
-    --popover-foreground: 0 0% 95%;
-    --primary: 28 100% 50%;
+    /* G2B Admin Dark Theme - Refined */
+    --background: 222 22% 8%;
+    --foreground: 210 20% 95%;
+    --card: 222 20% 11%;
+    --card-foreground: 210 20% 95%;
+    --popover: 222 20% 11%;
+    --popover-foreground: 210 20% 95%;
+    --primary: 25 95% 53%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 220 15% 18%;
-    --secondary-foreground: 0 0% 95%;
-    --muted: 220 15% 18%;
-    --muted-foreground: 220 10% 55%;
-    --accent: 28 100% 50%;
+    --secondary: 222 16% 15%;
+    --secondary-foreground: 210 20% 95%;
+    --muted: 222 16% 15%;
+    --muted-foreground: 215 15% 50%;
+    --accent: 25 95% 53%;
     --accent-foreground: 0 0% 100%;
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
-    --border: 220 15% 30%;
-    --input: 220 15% 18%;
-    --ring: 28 100% 50%;
+    --border: 222 14% 18%;
+    --input: 222 16% 15%;
+    --ring: 25 95% 53%;
     --radius: 0.75rem;
     
-    /* Custom colors */
-    --sidebar: 220 20% 11%;
-    --sidebar-foreground: 0 0% 95%;
-    --sidebar-active: 28 100% 50%;
-    --chart-1: 28 100% 50%;
-    --chart-2: 45 100% 55%;
-    --chart-3: 220 15% 40%;
-    --success: 142 76% 36%;
-    --warning: 45 100% 55%;
-  }
-
-  .dark {
-    --background: 220 20% 10%;
-    --foreground: 0 0% 95%;
-    --card: 220 20% 13%;
-    --card-foreground: 0 0% 95%;
-    --popover: 220 20% 13%;
-    --popover-foreground: 0 0% 95%;
-    --primary: 28 100% 50%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 220 15% 18%;
-    --secondary-foreground: 0 0% 95%;
-    --muted: 220 15% 18%;
-    --muted-foreground: 220 10% 55%;
-    --accent: 28 100% 50%;
-    --accent-foreground: 0 0% 100%;
-    --destructive: 0 84% 60%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 220 15% 30%;
-    --input: 220 15% 18%;
-    --ring: 28 100% 50%;
+    /* Sidebar */
+    --sidebar: 222 25% 7%;
+    --sidebar-foreground: 210 20% 95%;
+    --sidebar-active: 25 95% 53%;
+    
+    /* Semantic */
+    --success: 152 69% 41%;
+    --warning: 38 92% 50%;
+    --info: 217 91% 60%;
   }
 }
 
@@ -117,5 +115,24 @@
   body {
     background-color: hsl(var(--background));
     color: hsl(var(--foreground));
+    font-feature-settings: "rlig" 1, "calt" 1;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground));
   }
 }

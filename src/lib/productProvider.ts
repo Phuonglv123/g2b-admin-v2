@@ -202,13 +202,55 @@ export async function getProductStats(): Promise<ProductStats> {
 }
 
 /**
+ * Product code prefix mapping
+ * Format: TYPE-XXXXXX (6 digits)
+ */
+const PRODUCT_CODE_PREFIXES: Record<string, string> = {
+  billboard: 'BILL',
+  digital: 'DIGI',
+  led: 'LED',
+  transit: 'TRAN',
+  poster: 'POST',
+  banner: 'BANN',
+  other: 'OTH',
+}
+
+/**
  * Generate unique product code
+ * Format: PREFIX-XXXXXX where PREFIX is based on product type
+ * Examples: LED-123456, BILL-789012, DIGI-345678
  */
 export async function generateProductCode(type: string): Promise<string> {
-  const prefix = type.toUpperCase().substring(0, 3)
-  const timestamp = Date.now().toString().slice(-6)
-  const random = Math.random().toString(36).substring(2, 5).toUpperCase()
-  return `${prefix}-${timestamp}-${random}`
+  // Get prefix based on type
+  const normalizedType = type.toLowerCase()
+  const prefix = PRODUCT_CODE_PREFIXES[normalizedType] || type.toUpperCase().substring(0, 4)
+  
+  // Generate 6-digit random number (ensuring it's always 6 digits)
+  const randomNumber = Math.floor(100000 + Math.random() * 900000) // 100000-999999
+  
+  // Check if code already exists in database
+  const proposedCode = `${prefix}-${randomNumber}`
+  
+  const { data: existingProduct } = await supabase
+    .from('products')
+    .select('id')
+    .eq('product_code', proposedCode)
+    .maybeSingle()
+  
+  // If code exists, generate a new one recursively
+  if (existingProduct) {
+    return generateProductCode(type)
+  }
+  
+  return proposedCode
+}
+
+/**
+ * Get the product code prefix for a given type
+ */
+export function getProductCodePrefix(type: string): string {
+  const normalizedType = type.toLowerCase()
+  return PRODUCT_CODE_PREFIXES[normalizedType] || type.toUpperCase().substring(0, 4)
 }
 
 // =============================================

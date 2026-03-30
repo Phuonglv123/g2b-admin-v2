@@ -12,14 +12,14 @@ const RootLayout = () => {
   return (
     <div className="min-h-screen bg-background text-foreground">
       <Sidebar collapsed={sidebarCollapsed} onToggle={toggleSidebar} />
-      <Header sidebarCollapsed={sidebarCollapsed} />
+      <Header sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} />
       <main
         className={cn(
-          "min-h-screen pt-20 transition-all duration-300",
-          sidebarCollapsed ? "pl-[72px]" : "pl-[240px]"
+          "min-h-screen pt-16 transition-all duration-300",
+          sidebarCollapsed ? "pl-[72px]" : "pl-[260px]"
         )}
       >
-        <div className="p-8">
+        <div className="p-6">
           <Outlet />
         </div>
       </main>

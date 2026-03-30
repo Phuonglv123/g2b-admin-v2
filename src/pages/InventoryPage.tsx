@@ -21,6 +21,12 @@ import {
   Maximize2,
   Sparkles,
   Calendar,
+  Brain,
+  X,
+  Star,
+  FileDown,
+  ExternalLink,
+  FileSpreadsheet,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -55,8 +61,10 @@ import { ModernPDFUploader, ImageEditor } from '@/components/inventory'
 import { VietnamAddressSelector } from '@/components/location'
 import { convertAndUploadPdfImages } from '@/lib/convertApiService'
 import { supabase } from '@/lib/supabase'
-import { matchImagesByPagePosition } from '@/lib/claudeService'
-import type { ExtractedPDFData, ExtractedProductData } from '@/lib/claudeService'
+import { matchImagesByPagePosition, aiSearchProducts } from '@/lib/claudeService'
+import { exportProductToSlides, type SlideExportResult } from '@/lib/slidesExportService'
+import { exportProductsToExcel } from '@/lib/excelExportService'
+import type { ExtractedPDFData, ExtractedProductData, AISearchRecommendation } from '@/lib/claudeService'
 import type {
   ProductWithRelations,
   CreateProductParams,
@@ -123,6 +131,36 @@ const InventoryPage = () => {
     total: number
     productName?: string
   }>({ isImporting: false, step: '', current: 0, total: 0 })
+
+  // AI Search states
+  const [isAISearchMode, setIsAISearchMode] = useState(false)
+  const [aiSearchQuery, setAiSearchQuery] = useState('')
+  const [isAISearching, setIsAISearching] = useState(false)
+  const [aiSearchResults, setAiSearchResults] = useState<AISearchRecommendation[]>([])
+  const [aiSearchSummary, setAiSearchSummary] = useState('')
+  const [aiSearchError, setAiSearchError] = useState<string | null>(null)
+
+  // Export states
+  const [isExporting, setIsExporting] = useState(false)
+  const [exportResult, setExportResult] = useState<SlideExportResult | null>(null)
+  const [exportError, setExportError] = useState<string | null>(null)
+
+  // Export to Google Slides handler
+  const handleExportToSlides = async (product: ProductWithRelations) => {
+    setIsExporting(true)
+    setExportError(null)
+    setExportResult(null)
+    try {
+      const result = await exportProductToSlides(product)
+      setExportResult(result)
+      // Open in new tab
+      window.open(result.slideUrl, '_blank')
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : 'Export failed')
+    } finally {
+      setIsExporting(false)
+    }
+  }
 
   // Location form state (embedded in product)
   const [locationData, setLocationData] = useState<VietnamAddress>({})
@@ -612,6 +650,66 @@ const InventoryPage = () => {
     setAiError(error)
   }
 
+  // Handle AI Search
+  const handleAISearch = async () => {
+    if (!aiSearchQuery.trim()) {
+      setAiSearchError('Vui lòng nhập mô tả tìm kiếm')
+      return
+    }
+
+    try {
+      setIsAISearching(true)
+      setAiSearchError(null)
+      setAiSearchResults([])
+      setAiSearchSummary('')
+
+      console.log('🔍 Starting AI search:', aiSearchQuery)
+      
+      const result = await aiSearchProducts(aiSearchQuery, products)
+      
+      if (!result.success) {
+        setAiSearchError(result.error || 'Không thể tìm kiếm')
+        return
+      }
+
+      if (result.data) {
+        setAiSearchResults(result.data.recommendations || [])
+        setAiSearchSummary(result.data.search_summary || '')
+        setIsAISearchMode(true)
+        console.log('✅ AI Search completed:', result.data.recommendations?.length, 'results')
+      }
+    } catch (error) {
+      console.error('AI Search error:', error)
+      setAiSearchError(error instanceof Error ? error.message : 'Lỗi không xác định')
+    } finally {
+      setIsAISearching(false)
+    }
+  }
+
+  // Clear AI Search
+  const clearAISearch = () => {
+    setIsAISearchMode(false)
+    setAiSearchQuery('')
+    setAiSearchResults([])
+    setAiSearchSummary('')
+    setAiSearchError(null)
+  }
+
+  // Get AI filtered products (products matching AI recommendations)
+  const aiFilteredProducts = useMemo(() => {
+    if (!isAISearchMode || aiSearchResults.length === 0) {
+      return null
+    }
+    
+    // Get product IDs from AI recommendations and their order
+    const recommendedIds = new Map(aiSearchResults.map((r, idx) => [r.product_id, idx]))
+    
+    // Filter and sort products based on AI recommendations
+    return products
+      .filter(p => recommendedIds.has(p.id))
+      .sort((a, b) => (recommendedIds.get(a.id) ?? 0) - (recommendedIds.get(b.id) ?? 0))
+  }, [isAISearchMode, aiSearchResults, products])
+
   if (loading) {
     return (
       <div className="flex h-96 items-center justify-center">
@@ -629,6 +727,10 @@ const InventoryPage = () => {
           <p className="text-muted-foreground">Manage all advertising locations</p>
         </div>
         <div className="flex gap-2">
+          <Button variant="outline" onClick={() => exportProductsToExcel(filteredProducts)}>
+            <FileSpreadsheet className="mr-2 h-4 w-4 text-green-600" />
+            Export Excel
+          </Button>
           <Button variant="outline" onClick={() => navigate('/import')}>
             <Sparkles className="mr-2 h-4 w-4" />
             Import with AI
@@ -689,60 +791,141 @@ const InventoryPage = () => {
       </div>
 
       {/* Filters */}
-      <div className="flex flex-wrap gap-4">
-        <div className="relative flex-1 min-w-[200px]">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            placeholder="Search by name, product code..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="pl-10"
-          />
+      <div className="space-y-4">
+        {/* AI Search */}
+        <div className="rounded-lg border border-primary/30 bg-primary/5 p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <Brain className="h-5 w-5 text-primary" />
+            <span className="font-medium text-primary">Tìm kiếm thông minh bằng AI</span>
+          </div>
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <Input
+                placeholder="VD: Tìm bảng LED khu vực vòng xoay Lăng Cha Cả, Phú Nhuận..."
+                value={aiSearchQuery}
+                onChange={(e) => setAiSearchQuery(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleAISearch()}
+                className="pr-10"
+                disabled={isAISearching}
+              />
+              {aiSearchQuery && !isAISearching && (
+                <button
+                  onClick={() => setAiSearchQuery('')}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+            <Button 
+              onClick={handleAISearch} 
+              disabled={isAISearching || !aiSearchQuery.trim()}
+              className="min-w-[120px]"
+            >
+              {isAISearching ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Đang tìm...
+                </>
+              ) : (
+                <>
+                  <Brain className="mr-2 h-4 w-4" />
+                  Tìm với AI
+                </>
+              )}
+            </Button>
+            {isAISearchMode && (
+              <Button variant="outline" onClick={clearAISearch}>
+                <X className="mr-2 h-4 w-4" />
+                Xóa bộ lọc AI
+              </Button>
+            )}
+          </div>
+          {aiSearchError && (
+            <p className="mt-2 text-sm text-red-500">{aiSearchError}</p>
+          )}
+          {isAISearchMode && aiSearchSummary && (
+            <div className="mt-3 p-3 rounded-lg bg-background border border-border">
+              <p className="text-sm">{aiSearchSummary}</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Tìm thấy {aiSearchResults.length} sản phẩm phù hợp
+              </p>
+            </div>
+          )}
         </div>
-        <Select
-          value={filterType}
-          onChange={(e) => setFilterType(e.target.value)}
-          className="w-[150px]"
-        >
-          <option value="all">All Types</option>
-          <option value="billboard">Billboard</option>
-          <option value="digital">Digital Screen</option>
-          <option value="led">LED</option>
-          <option value="transit">Transit</option>
-          <option value="poster">Poster</option>
-          <option value="banner">Banner</option>
-          <option value="other">Other</option>
-        </Select>
-        <Select
-          value={filterStatus}
-          onChange={(e) => setFilterStatus(e.target.value)}
-          className="w-[150px]"
-        >
-          <option value="all">All Status</option>
-          <option value="1">Active</option>
-          <option value="0">Inactive</option>
-          <option value="2">Maintenance</option>
-        </Select>
-        <Select
-          value={filterCity}
-          onChange={(e) => setFilterCity(e.target.value)}
-          className="w-[150px]"
-        >
-          <option value="all">All Cities</option>
-          {cities.map((city) => (
-            <option key={city} value={city}>
-              {city}
-            </option>
-          ))}
-        </Select>
+
+        {/* Regular Filters */}
+        <div className="flex flex-wrap gap-4">
+          <div className="relative flex-1 min-w-[200px]">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              placeholder="Search by name, product code..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="pl-10"
+              disabled={isAISearchMode}
+            />
+          </div>
+          <Select
+            value={filterType}
+            onChange={(e) => setFilterType(e.target.value)}
+            className="w-[150px]"
+            disabled={isAISearchMode}
+          >
+            <option value="all">All Types</option>
+            <option value="billboard">Billboard</option>
+            <option value="digital">Digital Screen</option>
+            <option value="led">LED</option>
+            <option value="transit">Transit</option>
+            <option value="poster">Poster</option>
+            <option value="banner">Banner</option>
+            <option value="other">Other</option>
+          </Select>
+          <Select
+            value={filterStatus}
+            onChange={(e) => setFilterStatus(e.target.value)}
+            className="w-[150px]"
+            disabled={isAISearchMode}
+          >
+            <option value="all">All Status</option>
+            <option value="1">Active</option>
+            <option value="0">Inactive</option>
+            <option value="2">Maintenance</option>
+          </Select>
+          <Select
+            value={filterCity}
+            onChange={(e) => setFilterCity(e.target.value)}
+            className="w-[150px]"
+            disabled={isAISearchMode}
+          >
+            <option value="all">All Cities</option>
+            {cities.map((city) => (
+              <option key={city} value={city}>
+                {city}
+              </option>
+            ))}
+          </Select>
+        </div>
       </div>
 
       {/* Products Table */}
       <div className="rounded-lg border border-border bg-card overflow-hidden">
+        {/* AI Search Mode Header */}
+        {isAISearchMode && (
+          <div className="px-4 py-2 bg-primary/10 border-b border-primary/30 flex items-center gap-2">
+            <Brain className="h-4 w-4 text-primary" />
+            <span className="text-sm text-primary font-medium">
+              Kết quả tìm kiếm AI - Đã sắp xếp theo độ phù hợp
+            </span>
+          </div>
+        )}
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead className="bg-muted/50">
               <tr>
+                {isAISearchMode && (
+                  <th className="px-4 py-3 text-left text-sm font-medium w-16">Match</th>
+                )}
                 <th className="px-4 py-3 text-left text-sm font-medium">Product</th>
                 <th className="px-4 py-3 text-left text-sm font-medium">Code</th>
                 <th className="px-4 py-3 text-left text-sm font-medium">Location</th>
@@ -756,11 +939,36 @@ const InventoryPage = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {paginatedProducts.map((product) => {
+              {(isAISearchMode && aiFilteredProducts ? aiFilteredProducts : paginatedProducts).map((product) => {
                 const TypeIcon = typeIcons[product.type] || Package
                 const hasImages = product.images && product.images.length > 0
+                // Get AI match info if in AI mode
+                const aiMatch = isAISearchMode 
+                  ? aiSearchResults.find(r => r.product_id === product.id) 
+                  : null
                 return (
-                  <tr key={product.id} className="hover:bg-muted/30 transition-colors">
+                  <tr key={product.id} className={`hover:bg-muted/30 transition-colors ${aiMatch && aiMatch.match_score >= 0.8 ? 'bg-green-500/5' : ''}`}>
+                    {isAISearchMode && (
+                      <td className="px-4 py-3">
+                        <div className="flex flex-col items-center gap-1">
+                          <div className="flex items-center gap-0.5">
+                            {Array.from({ length: 5 }).map((_, i) => (
+                              <Star 
+                                key={i} 
+                                className={`h-3 w-3 ${
+                                  i < Math.round((aiMatch?.match_score || 0) * 5)
+                                    ? 'fill-yellow-400 text-yellow-400'
+                                    : 'text-muted-foreground/30'
+                                }`}
+                              />
+                            ))}
+                          </div>
+                          <span className="text-xs text-muted-foreground">
+                            {Math.round((aiMatch?.match_score || 0) * 100)}%
+                          </span>
+                        </div>
+                      </td>
+                    )}
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-3">
                         {/* Product Image or Icon */}
@@ -784,7 +992,10 @@ const InventoryPage = () => {
                         )}
                         <div>
                           <p className="font-medium">{product.product_name}</p>
-                          {hasImages && (
+                          {aiMatch?.match_reason && (
+                            <p className="text-xs text-primary/80 italic">{aiMatch.match_reason}</p>
+                          )}
+                          {hasImages && !aiMatch?.match_reason && (
                             <p className="text-xs text-muted-foreground">
                               <ImageIcon className="inline h-3 w-3 mr-1" />
                               {product.images.length} images
@@ -857,6 +1068,15 @@ const InventoryPage = () => {
                         <Button
                           variant="ghost"
                           size="sm"
+                          onClick={() => handleExportToSlides(product)}
+                          disabled={isExporting}
+                          title="Export to Google Slides"
+                        >
+                          {isExporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileDown className="h-4 w-4 text-blue-500" />}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
                           onClick={() => {
                             setSelectedProduct(product)
                             setIsDeleteOpen(true)
@@ -874,15 +1094,27 @@ const InventoryPage = () => {
         </div>
 
         {/* Empty state */}
-        {filteredProducts.length === 0 && (
+        {(isAISearchMode ? (aiFilteredProducts?.length || 0) === 0 : filteredProducts.length === 0) && (
           <div className="py-12 text-center">
-            <Package className="mx-auto h-12 w-12 text-muted-foreground/50" />
-            <p className="mt-4 text-muted-foreground">No products found</p>
+            {isAISearchMode ? (
+              <>
+                <Brain className="mx-auto h-12 w-12 text-muted-foreground/50" />
+                <p className="mt-4 text-muted-foreground">Không tìm thấy sản phẩm phù hợp với mô tả của bạn</p>
+                <Button variant="outline" className="mt-4" onClick={clearAISearch}>
+                  Xóa bộ lọc AI
+                </Button>
+              </>
+            ) : (
+              <>
+                <Package className="mx-auto h-12 w-12 text-muted-foreground/50" />
+                <p className="mt-4 text-muted-foreground">No products found</p>
+              </>
+            )}
           </div>
         )}
 
-        {/* Pagination */}
-        {totalPages > 1 && (
+        {/* Pagination - only show when not in AI search mode */}
+        {!isAISearchMode && totalPages > 1 && (
           <div className="flex items-center justify-between border-t border-border px-4 py-3">
             <p className="text-sm text-muted-foreground">
               Showing {(currentPage - 1) * itemsPerPage + 1} -{' '}
@@ -1134,9 +1366,33 @@ const InventoryPage = () => {
               )}
             </div>
           )}
+          {/* Export status messages */}
+          {exportError && (
+            <div className="mx-6 mb-2 rounded-md bg-red-50 p-3 text-sm text-red-600">
+              Export failed: {exportError}
+            </div>
+          )}
+          {exportResult && (
+            <div className="mx-6 mb-2 rounded-md bg-green-50 p-3 text-sm text-green-700 flex items-center justify-between">
+              <span>Exported successfully!</span>
+              <a href={exportResult.slideUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 font-medium text-blue-600 hover:underline">
+                Open Slides <ExternalLink className="h-3 w-3" />
+              </a>
+            </div>
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setIsViewOpen(false)}>
               Close
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                if (selectedProduct) handleExportToSlides(selectedProduct)
+              }}
+              disabled={isExporting}
+            >
+              {isExporting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileDown className="mr-2 h-4 w-4" />}
+              Export PPT
             </Button>
             <Button
               onClick={() => {

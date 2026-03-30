@@ -5,6 +5,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import dotenv from 'dotenv';
 import sharp from 'sharp';
 import pdfParse from 'pdf-parse';
+import { exportProductToSlides, exportMultipleProductsToSlides } from './slidesExporter.js';
 
 dotenv.config();
 
@@ -38,67 +39,95 @@ app.get('/health', (req, res) => {
 
 // Product extraction prompt - optimized for Vietnamese advertising product PDFs
 const EXTRACTION_PROMPT = `
-Bạn là một AI chuyên trích xuất thông tin sản phẩm quảng cáo ngoài trời (OOH - Out of Home) từ tài liệu PDF tiếng Việt.
+Bạn là AI chuyên trích xuất thông tin sản phẩm quảng cáo ngoài trời (OOH - Out of Home) từ tài liệu PDF tiếng Việt.
+Hãy phân tích kỹ toàn bộ nội dung và trích xuất chính xác từng trường thông tin.
 
-**CẤU TRÚC TÀI LIỆU:**
-- Trang 1: Logo/Thương hiệu của NHÀ CUNG CẤP (provider) - đây là công ty sở hữu/quản lý các bảng quảng cáo
+**CẤU TRÚC TÀI LIỆU THƯỜNG GẶP:**
+- Trang 1: Logo/Thương hiệu của NHÀ CUNG CẤP (provider) - công ty sở hữu/quản lý bảng quảng cáo
 - Các trang tiếp theo: Thông tin chi tiết từng sản phẩm (có thể có NHIỀU sản phẩm trong 1 file PDF)
+- Mỗi sản phẩm thường gồm: 1 trang thông tin + 1-3 trang hình ảnh minh hoạ
 
-**YÊU CẦU QUAN TRỌNG:**
+**YÊU CẦU:**
 1. Tìm tên NHÀ CUNG CẤP từ trang đầu (logo, header, footer, thương hiệu)
-2. Trích xuất TẤT CẢ sản phẩm có trong file PDF (có thể có 1 hoặc nhiều sản phẩm)
+2. Trích xuất TẤT CẢ sản phẩm có trong file PDF
 
-**CÁC TRƯỜNG THÔNG TIN CẦN TÌM CHO MỖI SẢN PHẨM:**
-- Mã vị trí / Mã sản phẩm / Code → product_code
-- Tên vị trí / Tên bảng / Vị trí → product_name  
-- Loại hình / Loại bảng / Hình thức → type (billboard/led/digital/banner/poster/transit)
-- ĐỊA CHỈ CẦN TÁCH RÕ RÀNG (CHỈ 2 CẤP):
-  + Số nhà → location.street_number (ví dụ: "123", "45A", "12/3")
-  + Tên đường → location.street_name (ví dụ: "Nguyễn Văn Linh", "Lê Lợi")
-  + Phường/Xã → location.ward (ví dụ: "Phường Bến Nghé", "Xã An Phú")
-  + Tỉnh/Thành phố → location.city_province (ví dụ: "TP. Hồ Chí Minh", "Hà Nội")
-- GPS nếu có → location.gps_coordinates (format: "lat,lng", ví dụ: "10.762622,106.660172")
-- Thuế địa phương nếu có → location.local_tax (phần trăm, ví dụ: 10)
-- Đơn vị tiền tệ → location.currency (VND/USD)
-- Kích thước / Size (rộng x cao) → attributes.width, attributes.height (đơn vị: mét)
-- Độ phân giải / Resolution → attributes.pixel_width x attributes.pixel_height
-- Thời lượng spot / Video duration → attributes.video_duration (giây)
-- Thời gian hoạt động / Operating time → attributes.opera_time_from, attributes.opera_time_to
-- Tần suất / Frequency → attributes.frequency
-- Số mặt / Sides → attributes.add_side
-- Chiếu sáng / Lighting → attributes.lighting (1=có, 0=không)
-- Lưu lượng / Traffic → traffic
-- Đơn giá / Giá thuê / Price → cost (chỉ lấy số, bỏ ký tự)
-- Đơn vị tiền / Currency → currency (VND/USD)
-- Thời hạn thuê / Duration → booking_duration
-- Chi phí thi công / Production cost → production_cost
-- Ghi chú / Note → attributes.note hoặc description
-- Khu vực / Area → areas (mảng)
+**=== BẢNG MAPPING TRƯỜNG THÔNG TIN ===**
+
+| Thông tin trong PDF | Field JSON | Ghi chú |
+|---|---|---|
+| Mã vị trí / Mã sản phẩm / Code / Location Code | product_code | Giữ nguyên mã gốc nếu có |
+| Tên vị trí / Tên bảng / Vị trí / Location | product_name | Tên đầy đủ |
+| Loại hình / Loại bảng / Hình thức / Format | type | billboard/led/digital/banner/poster/transit/other |
+| Số nhà | location.street_number | Ví dụ: "123", "45A" |
+| Tên đường | location.street_name | Ví dụ: "Nguyễn Văn Linh" |
+| Phường/Xã | location.ward | Ví dụ: "Phường Bến Nghé" |
+| Tỉnh/Thành phố | location.city_province | Ví dụ: "TP. Hồ Chí Minh" |
+| GPS / Toạ độ | location.gps_coordinates | Format: "lat,lng" |
+| Hướng nhìn / View / Facing | location.landmark | Mô tả hướng/điểm mốc |
+| Kích thước / Size (rộng x cao) | attributes.width, attributes.height | Đơn vị: MÉT |
+| Độ phân giải / Resolution | attributes.pixel_width, attributes.pixel_height | Pixel |
+| Thời lượng spot / Duration | attributes.video_duration | Giây |
+| Thời gian hoạt động / Operating hours | attributes.opera_time_from, attributes.opera_time_to | HH:mm |
+| Tần suất / Frequency / Spots/day | attributes.frequency | Giữ nguyên text |
+| Số mặt / Sides | attributes.add_side | Số |
+| Chiếu sáng / Lighting / Backlit | attributes.lighting | 1=có, 0=không |
+
+**=== PHÂN BIỆT TRAFFIC VÀ GIÁ (CỰC KỲ QUAN TRỌNG) ===**
+
+⚠️ TRAFFIC (lưu lượng giao thông) → field "traffic" (giữ nguyên text gốc):
+- Từ khoá nhận biết: "traffic", "lưu lượng", "OTC", "VAC", "lượt/ngày", "xe/ngày", "người/ngày", "vehicles", "pedestrian"
+- OTC = Ô tô con (passenger cars)
+- VAC = Vận tải các loại (commercial vehicles / trucks)
+- Ví dụ ĐÚNG:
+  + "OTC/VAC: 120.000" → traffic: "OTC/VAC: 120.000"
+  + "Traffic: 50.000 OTC/ngày" → traffic: "50.000 OTC/ngày"
+  + "Lưu lượng: 80.000 lượt/ngày" → traffic: "80.000 lượt/ngày"
+  + "45,000 vehicles/day" → traffic: "45,000 vehicles/day"
+  + Dòng ghi "OTC: 30.000 - VAC: 15.000" → traffic: "OTC: 30.000 - VAC: 15.000"
+- ❌ SAI: Đưa số OTC/VAC vào cost
+
+💰 GIÁ (chi phí thuê) → field "cost" (CHỈ lấy số, bỏ ký tự):
+- Từ khoá nhận biết: "đơn giá", "giá thuê", "giá", "price", "rate", "rental", "chi phí thuê", "VND/tháng", "USD/tháng", "VNĐ", "vnđ"
+- Thường đi kèm đơn vị tiền tệ (VND, USD, đ, $) và chu kỳ (/tháng, /năm, /month)
+- Ví dụ: "Giá thuê: 120.000.000 VND/tháng" → cost: 120000000
+- ❌ SAI: Đưa số traffic/OTC/VAC vào cost
+
+💡 QUY TẮC: Nếu dòng nào có chứa "OTC", "VAC", "traffic", "lưu lượng" → LUÔN LUÔN đưa vào "traffic", KHÔNG BAO GIỜ vào "cost"
+
+**=== CÁC TRƯỜNG KHÁC ===**
+| Thông tin | Field | Ghi chú |
+|---|---|---|
+| Đơn vị tiền | currency | "VND" hoặc "USD" |
+| Thời hạn thuê | booking_duration | Ví dụ: "1 tháng", "6 tháng" |
+| Chi phí thi công / Production | production_cost | Giữ nguyên text |
+| Thuế địa phương | location.local_tax | Phần trăm (10, 15...) |
+| Khu vực / Area | areas | Mảng string |
+| Ghi chú | attributes.note hoặc description | Thông tin bổ sung |
 
 **ĐỊNH DẠNG OUTPUT (JSON):**
 {
-  "provider_name": "Tên nhà cung cấp (từ logo/header trang 1)",
+  "provider_name": "Tên nhà cung cấp",
   "products": [
     {
-      "product_code": "Mã sản phẩm nếu có",
+      "product_code": "Mã sản phẩm (giữ nguyên từ PDF nếu có, hoặc để trống)",
       "product_name": "Tên đầy đủ của vị trí/sản phẩm",
       "type": "billboard | digital | led | transit | poster | banner | other",
-      "areas": ["Khu vực 1", "Khu vực 2"],
+      "areas": ["Khu vực"],
       "cost": 0,
       "currency": "VND",
-      "traffic": "Lưu lượng giao thông",
+      "traffic": "Giữ nguyên text lưu lượng giao thông từ PDF",
       "booking_duration": "1 tháng",
-      "production_cost": "Chi phí sản xuất",
-      "description": "Mô tả tổng hợp từ các thông tin trong PDF",
+      "production_cost": "",
+      "description": "Mô tả tổng hợp",
       "location": {
         "name": "Tên vị trí ngắn gọn",
-        "address": "Địa chỉ đầy đủ (để tương thích ngược)",
-        "street_number": "Số nhà (nếu có)",
-        "street_name": "Tên đường",
-        "ward": "Phường/Xã",
-        "city_province": "Tỉnh/Thành phố",
-        "landmark": "Điểm mốc/Hướng nhìn nếu có",
-        "gps_coordinates": "lat,lng (nếu có)",
+        "address": "Địa chỉ đầy đủ",
+        "street_number": "",
+        "street_name": "",
+        "ward": "",
+        "city_province": "",
+        "landmark": "Hướng nhìn/Điểm mốc",
+        "gps_coordinates": "lat,lng",
         "currency": "VND",
         "local_tax": null
       },
@@ -112,7 +141,7 @@ Bạn là một AI chuyên trích xuất thông tin sản phẩm quảng cáo ng
         "opera_time_to": "22:00",
         "frequency": "",
         "shape": "rectangle",
-        "note": "Ghi chú từ PDF",
+        "note": "",
         "add_side": 1,
         "quantity_of_ad": 1,
         "lighting": 1
@@ -121,26 +150,78 @@ Bạn là một AI chuyên trích xuất thông tin sản phẩm quảng cáo ng
   ],
   "detected_items": [
     {
-      "name": "Tên item phát hiện được",
+      "name": "Tên item phát hiện",
       "description": "Mô tả ngắn",
-      "value": "Giá trị/giá"
+      "value": "Giá trị"
     }
   ]
 }
 
-**QUY TẮC QUAN TRỌNG:**
-1. provider_name: Tìm tên công ty/thương hiệu từ logo, header, hoặc footer trang đầu
-2. products: Mảng chứa TẤT CẢ sản phẩm tìm được (ít nhất 1)
-3. Kích thước: chuyển về đơn vị MÉT (nếu ghi cm thì chia 100, mm thì chia 1000)
-4. Giá (cost): CHỈ lấy số, loại bỏ dấu chấm ngăn cách hàng nghìn, dấu phẩy, ký tự tiền tệ
-5. Thời gian hoạt động: format HH:mm (ví dụ: 06:00, 22:00)
-6. Nếu có "Hướng nhìn" hoặc "View" → đưa vào landmark
-7. Nếu không tìm thấy thông tin → để giá trị mặc định
-8. type phải là 1 trong: billboard, digital, led, transit, poster, banner, other
-9. ĐỊA CHỈ: PHẢI tách rõ ràng thành street_number, street_name, ward, city_province
-10. GPS: Nếu tìm thấy tọa độ GPS → ghi vào gps_coordinates với format "lat,lng"
-11. detected_items: Liệt kê các mục/dịch vụ chính đọc được từ tài liệu (tên, mô tả, giá)
-12. Trả về ĐÚNG định dạng JSON, KHÔNG có text thừa
+**QUY TẮC XỬ LÝ:**
+1. provider_name: Tên công ty/thương hiệu từ logo, header, footer trang đầu
+2. products: TẤT CẢ sản phẩm tìm được (ít nhất 1)
+3. Kích thước: chuyển về MÉT (cm÷100, mm÷1000)
+4. cost: CHỈ số, bỏ dấu chấm/phẩy ngăn hàng nghìn, bỏ ký tự tiền tệ
+5. Thời gian: format HH:mm
+6. "Hướng nhìn" / "View" / "Facing" → landmark
+7. Không tìm thấy → giá trị mặc định
+8. type: billboard | digital | led | transit | poster | banner | other
+9. Địa chỉ: TÁCH rõ street_number, street_name, ward, city_province
+10. GPS: format "lat,lng"
+11. detected_items: Liệt kê các mục/dịch vụ đọc được
+12. product_code: Giữ nguyên mã từ PDF nếu có; nếu không có thì để trống
+13. ⚠️ NHẮC LẠI: OTC/VAC/traffic/lưu lượng → field "traffic", KHÔNG PHẢI "cost"
+14. Trả về ĐÚNG JSON, KHÔNG có text thừa trước hoặc sau JSON
+`;
+
+// AI Search prompt for product recommendations
+const AI_SEARCH_PROMPT = `
+Bạn là AI trợ lý tìm kiếm sản phẩm quảng cáo ngoài trời (OOH). Nhiệm vụ của bạn là phân tích yêu cầu tìm kiếm của người dùng và xác định các tiêu chí tìm kiếm.
+
+**YÊU CẦU TÌM KIẾM CỦA NGƯỜI DÙNG:**
+{USER_QUERY}
+
+**DANH SÁCH SẢN PHẨM CÓ SẴN:**
+{PRODUCTS_LIST}
+
+**NHIỆM VỤ:**
+1. Phân tích yêu cầu tìm kiếm để hiểu:
+   - Loại bảng quảng cáo (billboard, led, digital, etc.)
+   - Khu vực/vị trí mong muốn (quận, phường, đường, địa danh)
+   - Các yêu cầu khác (kích thước, giá, etc.)
+
+2. Tìm và xếp hạng các sản phẩm PHÙ HỢP NHẤT từ danh sách:
+   - Ưu tiên sản phẩm khớp với địa điểm/khu vực được đề cập
+   - Xét đến landmark, địa chỉ, phường, quận
+   - Cân nhắc loại hình sản phẩm nếu được chỉ định
+
+**TRẢ VỀ JSON:**
+{
+  "query_analysis": {
+    "product_type": "loại sản phẩm yêu cầu (nếu có)",
+    "location_keywords": ["từ khóa vị trí 1", "từ khóa 2"],
+    "area_district": "quận/huyện (nếu xác định được)",
+    "additional_requirements": "yêu cầu khác (nếu có)"
+  },
+  "recommendations": [
+    {
+      "product_id": "id sản phẩm",
+      "product_name": "tên sản phẩm", 
+      "product_code": "mã sản phẩm",
+      "match_score": 0.0-1.0,
+      "match_reason": "lý do phù hợp ngắn gọn",
+      "location_match": true/false,
+      "type_match": true/false
+    }
+  ],
+  "search_summary": "Tóm tắt kết quả tìm kiếm bằng tiếng Việt tự nhiên"
+}
+
+**LƯU Ý:**
+- Trả về tối đa 10 sản phẩm phù hợp nhất
+- Xếp hạng theo match_score giảm dần
+- Nếu không tìm thấy sản phẩm phù hợp, trả về mảng recommendations rỗng
+- search_summary nên mô tả kết quả một cách tự nhiên, dễ hiểu
 `;
 
 /**
@@ -473,9 +554,198 @@ ${productListStr}
   }
 });
 
+/**
+ * Export single product to Google Slides
+ */
+app.post('/api/export-slides', express.json(), async (req, res) => {
+  try {
+    const { product } = req.body;
+    
+    if (!product) {
+      return res.status(400).json({
+        success: false,
+        error: 'Product data is required'
+      });
+    }
+
+    console.log(`📊 Exporting product to Google Slides: ${product.product_name}`);
+    
+    const result = await exportProductToSlides(product);
+    
+    console.log(`✅ Export complete: ${result.slideUrl}`);
+    
+    res.json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    console.error('Export error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Unknown error during export'
+    });
+  }
+});
+
+/**
+ * Export multiple products to Google Slides
+ */
+app.post('/api/export-slides-batch', express.json(), async (req, res) => {
+  try {
+    const { products } = req.body;
+    
+    if (!products || !Array.isArray(products) || products.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Products array is required'
+      });
+    }
+
+    console.log(`📊 Batch exporting ${products.length} products to Google Slides`);
+    
+    const result = await exportMultipleProductsToSlides(products);
+    
+    console.log(`✅ Batch export complete: ${result.slideUrl}`);
+    
+    res.json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    console.error('Batch export error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Unknown error during batch export'
+    });
+  }
+});
+
 // Start server
 app.listen(PORT, () => {
   console.log(`🚀 Claude Proxy Server running on port ${PORT}`);
   console.log(`📍 Health check: http://localhost:${PORT}/health`);
   console.log(`📤 Extract endpoint: POST http://localhost:${PORT}/api/extract`);
+  console.log(`🔍 AI Search endpoint: POST http://localhost:${PORT}/api/ai-search`);
+  console.log(`📊 Export Slides: POST http://localhost:${PORT}/api/export-slides`);
+  console.log(`📊 Batch Export: POST http://localhost:${PORT}/api/export-slides-batch`);
+});
+
+/**
+ * AI-powered product search/recommendation
+ */
+app.post('/api/ai-search', express.json(), async (req, res) => {
+  try {
+    const { query, products } = req.body;
+    
+    if (!query || typeof query !== 'string') {
+      return res.status(400).json({
+        success: false,
+        error: 'Search query is required'
+      });
+    }
+
+    if (!products || !Array.isArray(products) || products.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Products list is required'
+      });
+    }
+
+    console.log(`🔍 AI Search request: "${query}" among ${products.length} products`);
+
+    // Format products for the prompt
+    const productsListStr = products.map((p, i) => {
+      return `${i + 1}. ID: ${p.id}
+   Tên: ${p.product_name}
+   Mã: ${p.product_code}
+   Loại: ${p.type}
+   Địa chỉ: ${p.location_address || 'N/A'}
+   Phường: ${p.ward || 'N/A'}
+   Quận/TP: ${p.city_province || 'N/A'}
+   Landmark: ${p.landmark || 'N/A'}
+   Giá: ${p.cost} ${p.currency}`;
+    }).join('\n\n');
+
+    // Build prompt
+    const searchPrompt = AI_SEARCH_PROMPT
+      .replace('{USER_QUERY}', query)
+      .replace('{PRODUCTS_LIST}', productsListStr);
+
+    // Call Claude API
+    let message;
+    let lastError;
+    const MAX_RETRIES = 2;
+    
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        console.log(`Claude AI Search attempt ${attempt}/${MAX_RETRIES}...`);
+        
+        message = await anthropic.messages.create({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 4096,
+          messages: [
+            {
+              role: 'user',
+              content: searchPrompt
+            }
+          ]
+        });
+        break;
+      } catch (apiError) {
+        lastError = apiError;
+        console.error(`AI Search attempt ${attempt} failed:`, apiError.message);
+        
+        if (apiError.status === 529 || apiError.status === 429) {
+          if (attempt < MAX_RETRIES) {
+            await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
+          }
+        } else {
+          throw apiError;
+        }
+      }
+    }
+
+    if (!message) {
+      return res.status(503).json({
+        success: false,
+        error: `Claude API đang quá tải. Vui lòng thử lại sau. (${lastError?.message || 'Unknown error'})`
+      });
+    }
+
+    // Extract response
+    const responseText = message.content
+      .filter(block => block.type === 'text')
+      .map(block => block.text)
+      .join('\n');
+
+    // Parse JSON
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return res.status(500).json({
+        success: false,
+        error: 'Could not parse AI response',
+        rawResponse: responseText
+      });
+    }
+
+    const searchResult = JSON.parse(jsonMatch[0]);
+    
+    console.log(`✅ AI Search completed: ${searchResult.recommendations?.length || 0} recommendations`);
+
+    res.json({
+      success: true,
+      data: searchResult,
+      usage: {
+        inputTokens: message.usage.input_tokens,
+        outputTokens: message.usage.output_tokens
+      }
+    });
+
+  } catch (error) {
+    console.error('AI Search error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Unknown error during AI search'
+    });
+  }
 });

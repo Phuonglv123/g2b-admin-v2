@@ -1,4 +1,5 @@
 import type { CreateProductParams, ProductAttributes, ProductType } from '@/types/product'
+import type { ProductWithRelations } from '@/types/product'
 import { 
   geocodeAddress, 
   buildFullAddress as buildGeoAddress,
@@ -8,6 +9,127 @@ import {
 
 // Claude Proxy Server URL
 const CLAUDE_PROXY_URL = import.meta.env.VITE_CLAUDE_PROXY_URL || 'http://localhost:3001'
+
+// =============================================
+// AI SEARCH TYPES AND FUNCTIONS
+// =============================================
+
+export interface AISearchQueryAnalysis {
+  product_type: string | null
+  location_keywords: string[]
+  area_district: string | null
+  additional_requirements: string | null
+}
+
+export interface AISearchRecommendation {
+  product_id: string
+  product_name: string
+  product_code: string
+  match_score: number
+  match_reason: string
+  location_match: boolean
+  type_match: boolean
+}
+
+export interface AISearchResult {
+  query_analysis: AISearchQueryAnalysis
+  recommendations: AISearchRecommendation[]
+  search_summary: string
+}
+
+export interface AISearchResponse {
+  success: boolean
+  data?: AISearchResult
+  error?: string
+  usage?: {
+    inputTokens: number
+    outputTokens: number
+  }
+}
+
+/**
+ * AI-powered product search using Claude
+ * @param query - Natural language search query (Vietnamese)
+ * @param products - List of products to search from
+ */
+export async function aiSearchProducts(
+  query: string, 
+  products: ProductWithRelations[]
+): Promise<AISearchResponse> {
+  try {
+    if (!query.trim()) {
+      return {
+        success: false,
+        error: 'Vui lòng nhập từ khóa tìm kiếm'
+      }
+    }
+
+    if (products.length === 0) {
+      return {
+        success: false,
+        error: 'Không có sản phẩm nào để tìm kiếm'
+      }
+    }
+
+    // Prepare products data for API (only essential fields)
+    const productsData = products.map(p => ({
+      id: p.id,
+      product_name: p.product_name,
+      product_code: p.product_code,
+      type: p.type,
+      location_address: p.location_address,
+      ward: p.ward,
+      city_province: p.city_province,
+      landmark: p.landmark,
+      cost: p.cost,
+      currency: p.currency
+    }))
+
+    const response = await fetch(`${CLAUDE_PROXY_URL}/api/ai-search`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        query,
+        products: productsData
+      })
+    })
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}))
+      return {
+        success: false,
+        error: errorData.error || `Server error: ${response.status}`
+      }
+    }
+
+    const result = await response.json()
+    
+    if (!result.success) {
+      return {
+        success: false,
+        error: result.error || 'AI search failed'
+      }
+    }
+
+    return {
+      success: true,
+      data: result.data,
+      usage: result.usage
+    }
+  } catch (error) {
+    console.error('AI Search error:', error)
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Lỗi không xác định khi tìm kiếm'
+    }
+  }
+}
+
+// =============================================
+// PRODUCT EXTRACTION TYPES
+// =============================================
 
 // Extended location interface for AI extraction
 export interface ExtractedLocationData {
