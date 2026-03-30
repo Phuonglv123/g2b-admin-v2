@@ -113,6 +113,7 @@ function buildPlaceholderMap(product) {
   const spotsDay = attrs.frequency || '';
 
   return {
+    // Double-brace format {{key}}
     '{{product_name}}': product.product_name || '',
     '{{product_code}}': product.product_code || '',
     '{{led_count}}': String(ledCount),
@@ -136,6 +137,33 @@ function buildPlaceholderMap(product) {
     '{{city_province}}': cityProvince,
     '{{provider_name}}': providerName,
     '{{currency}}': currency,
+    
+    // Single-brace format {key} — matching template in screenshot
+    '{product_name}': product.product_name || '',
+    '{product_code}': product.product_code || '',
+    '{location_name}': product.location_name || product.product_name || '',
+    '{location_address}': address,
+    '{type}': formatLabel,
+    '{attributes.width}': attrs.width ? `${attrs.width}m W` : '',
+    '{attributes.height}': attrs.height ? `${attrs.height}mH` : '',
+    '{attributes.ad_side}': String(attrs.add_side || 1),
+    '{attributes.video_duration}': attrs.video_duration ? `${attrs.video_duration}s duration,` : '',
+    '{attributes.pixel_width}': attrs.pixel_width ? String(attrs.pixel_width) : '',
+    '{attributes.pixel_height}': attrs.pixel_height ? String(attrs.pixel_height) : '',
+    '{attributes.quantity_of_ad}': String(ledCount),
+    '{frequency}': spotsDay,
+    '{traffic}': traffic,
+    '{cost}': costFormatted,
+    '{booking_duration}': bookingDuration || '',
+    '{description}': description,
+    '{landmark}': landmark,
+    '{gps}': gps,
+    '{local_tax}': localTax,
+    '{city_province}': cityProvince,
+    '{currency}': currency,
+    '{opera_time_from}': attrs.opera_time_from || '',
+    '{opera_time_to}': attrs.opera_time_to || '',
+    '{attributes.note}': attrs.note || '',
   };
 }
 
@@ -152,6 +180,7 @@ export async function exportProductToSlides(product) {
   const fileName = `${product.product_name || 'Product'} - G2B Media`;
   const copyResponse = await drive.files.copy({
     fileId: TEMPLATE_SLIDE_ID,
+    supportsAllDrives: true,
     requestBody: {
       name: fileName,
     },
@@ -178,65 +207,72 @@ export async function exportProductToSlides(product) {
     });
   }
 
-  // 4. Handle image replacements if product has images
-  if (product.images && product.images.length > 0) {
-    // Get the presentation to find image placeholders
-    const presentation = await slides.presentations.get({
-      presentationId: newPresentationId,
-    });
-
-    const slidePages = presentation.data.slides || [];
-    
-    for (const page of slidePages) {
-      const elements = page.pageElements || [];
-      for (const element of elements) {
-        // Look for shapes with placeholder text like {{image_1}}, {{image_2}}, etc.
-        if (element.shape && element.shape.text) {
-          const textContent = element.shape.text.textElements
-            ?.map(te => te.textRun?.content || '')
-            .join('')
-            .trim();
-          
-          const imageMatch = textContent?.match(/\{\{image_(\d+)\}\}/);
-          if (imageMatch) {
-            const imageIndex = parseInt(imageMatch[1]) - 1;
-            if (product.images[imageIndex]) {
-              const imageUrl = product.images[imageIndex];
-              // Replace the shape with an image
-              requests.push({
-                deleteObject: {
-                  objectId: element.objectId,
-                },
-              });
-              requests.push({
-                createImage: {
-                  url: imageUrl,
-                  elementProperties: {
-                    pageObjectId: page.objectId,
-                    size: element.size,
-                    transform: element.transform,
-                  },
-                },
-              });
-            }
-          }
-        }
-      }
-    }
-  }
-
-  // 5. Execute batch update
+  // 4. Execute text replacement batch update
   if (requests.length > 0) {
     await slides.presentations.batchUpdate({
       presentationId: newPresentationId,
       requestBody: { requests },
     });
-    console.log(`Applied ${requests.length} replacements`);
+    console.log(`Applied ${requests.length} text replacements`);
+  }
+
+  // 5. Handle image replacements by detecting existing image areas on the slide
+  // The template has 2 large embedded images on the right side:
+  //   - Top-right: large landscape/city photo area (translateX > 4M EMU, scaleX > 200)
+  //   - Bottom-right: smaller product close-up area (translateX > 4M EMU, scaleX > 200)
+  // We detect them by position & scale, then use replaceImage to swap content in-place.
+  if (product.images && product.images.length > 0) {
+    const presentation = await slides.presentations.get({
+      presentationId: newPresentationId,
+    });
+    const slide = presentation.data.slides[0];
+    const pageElements = slide.pageElements || [];
+
+    // Find large image elements on the right half of the slide
+    const imagePlaceholders = pageElements
+      .filter(el => {
+        if (!el.image) return false;
+        const tx = el.transform?.translateX || 0;
+        const sx = Math.abs(el.transform?.scaleX || 0);
+        // Right side (translateX > 4M EMU ≈ 4.37") and large scale (> 200)
+        return tx > 4000000 && sx > 200;
+      })
+      .sort((a, b) => {
+        // Sort by Y position (top first)
+        const ay = a.transform?.translateY || 0;
+        const by = b.transform?.translateY || 0;
+        return ay - by;
+      });
+
+    console.log(`Found ${imagePlaceholders.length} image placeholder areas`);
+
+    const imageRequests = [];
+    for (let i = 0; i < Math.min(imagePlaceholders.length, product.images.length); i++) {
+      const imageUrl = product.images[i];
+      if (!imageUrl) continue;
+
+      imageRequests.push({
+        replaceImage: {
+          imageObjectId: imagePlaceholders[i].objectId,
+          url: imageUrl,
+          imageReplaceMethod: 'CENTER_INSIDE',
+        },
+      });
+    }
+
+    if (imageRequests.length > 0) {
+      await slides.presentations.batchUpdate({
+        presentationId: newPresentationId,
+        requestBody: { requests: imageRequests },
+      });
+      console.log(`Replaced ${imageRequests.length} images`);
+    }
   }
 
   // 6. Make the file accessible (anyone with link can view)
   await drive.permissions.create({
     fileId: newPresentationId,
+    supportsAllDrives: true,
     requestBody: {
       role: 'reader',
       type: 'anyone',
@@ -345,6 +381,7 @@ export async function exportMultipleProductsToSlides(products) {
   const fileName = `G2B Media - ${products.length} Products Export`;
   await drive.files.update({
     fileId: presentationId,
+    supportsAllDrives: true,
     requestBody: { name: fileName },
   });
 
@@ -358,4 +395,32 @@ export async function exportMultipleProductsToSlides(products) {
     fileName,
     productCount: products.length,
   };
+}
+
+/**
+ * Download a presentation as PPTX binary using Drive API export
+ * Returns a readable stream
+ */
+export async function downloadPresentationAsPptx(presentationId) {
+  const auth = await getAuthClient();
+  const drive = google.drive({ version: 'v3', auth });
+
+  // Get file name
+  const fileMeta = await drive.files.get({
+    fileId: presentationId,
+    supportsAllDrives: true,
+    fields: 'name',
+  });
+
+  const fileName = fileMeta.data.name || 'export';
+
+  // Export as PPTX
+  const response = await drive.files.export({
+    fileId: presentationId,
+    mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  }, {
+    responseType: 'stream',
+  });
+
+  return { stream: response.data, fileName };
 }

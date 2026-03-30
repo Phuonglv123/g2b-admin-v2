@@ -5,7 +5,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import dotenv from 'dotenv';
 import sharp from 'sharp';
 import pdfParse from 'pdf-parse';
-import { exportProductToSlides, exportMultipleProductsToSlides } from './slidesExporter.js';
+import { exportProductToSlides, exportMultipleProductsToSlides, downloadPresentationAsPptx } from './slidesExporter.js';
 
 dotenv.config();
 
@@ -616,6 +616,34 @@ app.post('/api/export-slides-batch', express.json(), async (req, res) => {
     res.status(500).json({
       success: false,
       error: error.message || 'Unknown error during batch export'
+    });
+  }
+});
+
+/**
+ * Download exported presentation as PPTX file
+ */
+app.get('/api/export-slides/download/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id || !/^[a-zA-Z0-9_-]+$/.test(id)) {
+      return res.status(400).json({ success: false, error: 'Invalid presentation ID' });
+    }
+
+    console.log(`📥 Downloading PPTX: ${id}`);
+
+    const { stream, fileName } = await downloadPresentationAsPptx(id);
+    const safeName = fileName.replace(/[^a-zA-Z0-9_\-. ]/g, '_');
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}.pptx"`);
+
+    stream.pipe(res);
+  } catch (error) {
+    console.error('Download error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Download failed',
     });
   }
 });

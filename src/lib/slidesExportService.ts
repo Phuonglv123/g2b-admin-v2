@@ -6,6 +6,7 @@ export interface SlideExportResult {
   presentationId: string
   slideUrl: string
   exportUrl: string
+  downloadUrl: string
   fileName: string
   productCount?: number
 }
@@ -30,7 +31,9 @@ export async function exportProductToSlides(product: ProductWithRelations): Prom
     throw new Error(result.error || 'Export failed')
   }
 
-  return result.data as SlideExportResult
+  const data = result.data as SlideExportResult
+  data.downloadUrl = `${PROXY_URL}/api/export-slides/download/${data.presentationId}`
+  return data
 }
 
 /**
@@ -53,5 +56,7 @@ export async function exportMultipleProductsToSlides(products: ProductWithRelati
     throw new Error(result.error || 'Export failed')
   }
 
-  return result.data as SlideExportResult
+  const data = result.data as SlideExportResult
+  data.downloadUrl = `${PROXY_URL}/api/export-slides/download/${data.presentationId}`
+  return data
 }

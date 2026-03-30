@@ -153,8 +153,13 @@ const InventoryPage = () => {
     try {
       const result = await exportProductToSlides(product)
       setExportResult(result)
-      // Open in new tab
-      window.open(result.slideUrl, '_blank')
+      // Auto-download the PPTX file
+      const a = document.createElement('a')
+      a.href = result.downloadUrl
+      a.download = `${result.fileName}.pptx`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
     } catch (err) {
       setExportError(err instanceof Error ? err.message : 'Export failed')
     } finally {
@@ -1373,11 +1378,16 @@ const InventoryPage = () => {
             </div>
           )}
           {exportResult && (
-            <div className="mx-6 mb-2 rounded-md bg-green-50 p-3 text-sm text-green-700 flex items-center justify-between">
+            <div className="mx-6 mb-2 rounded-md bg-green-50 p-3 text-sm text-green-700 flex flex-col gap-2">
               <span>Exported successfully!</span>
-              <a href={exportResult.slideUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 font-medium text-blue-600 hover:underline">
-                Open Slides <ExternalLink className="h-3 w-3" />
-              </a>
+              <div className="flex items-center gap-3">
+                <a href={exportResult.downloadUrl} download={`${exportResult.fileName}.pptx`} className="flex items-center gap-1 font-medium text-blue-600 hover:underline">
+                  <FileDown className="h-3 w-3" /> Download PPT
+                </a>
+                <a href={exportResult.slideUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 font-medium text-gray-500 hover:underline">
+                  <ExternalLink className="h-3 w-3" /> Open in Google Slides
+                </a>
+              </div>
             </div>
           )}
           <DialogFooter>
