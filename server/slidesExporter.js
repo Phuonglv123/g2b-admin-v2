@@ -229,11 +229,13 @@ export async function exportProductToSlides(product) {
   }
 
   // 5. Handle image replacements — only use first 2 images
-  // Template layout (based on EMU coordinates):
-  //   - Top-right (cols 7-13, rows 1-3): large hero image — translateX ~4.5M+, translateY < 2M
-  //   - Bottom-right (cols 9-12, rows 4-5): smaller feature image — translateX ~5.5M+, translateY > 2M
-  // We detect image elements by position on the right half, sort by Y, and replace max 2.
+  // Template has exactly 2 large photo areas on the right side, identified by inspection:
+  //   - Top-right hero: objectId "g3d25dc2f435_0_4" (5.49" x 3.56" at x=5.11", y=-0.67")
+  //   - Bottom-right feature: objectId "g3d25dc2f435_0_6" (5.37" x 3.79" at x=5.22", y=1.80")
+  // We use known objectIds as primary strategy, with dynamic fallback.
+  const KNOWN_IMAGE_IDS = ['g3d25dc2f435_0_4', 'g3d25dc2f435_0_6'];
   const imagesToUse = (product.images || []).slice(0, 2);
+
   if (imagesToUse.length > 0) {
     const presentation = await slides.presentations.get({
       presentationId: newPresentationId,
@@ -241,30 +243,44 @@ export async function exportProductToSlides(product) {
     const slide = presentation.data.slides[0];
     const pageElements = slide.pageElements || [];
 
-    // Log all image elements for debugging
-    const allImages = pageElements.filter(el => el.image);
-    allImages.forEach((el, idx) => {
+    // Strategy 1: Find by known objectIds from the template
+    let imagePlaceholders = KNOWN_IMAGE_IDS
+      .map(id => pageElements.find(el => el.objectId === id && el.image))
+      .filter(Boolean);
+
+    // Strategy 2: If known IDs not found (e.g. after duplication), detect dynamically
+    if (imagePlaceholders.length < 2) {
+      console.log('Known image IDs not found, using dynamic detection...');
+      
+      // Calculate rendered size: size * |scale|
+      function getRenderedSize(el) {
+        const w = (el.size?.width?.magnitude || 0) * Math.abs(el.transform?.scaleX || 1);
+        const h = (el.size?.height?.magnitude || 0) * Math.abs(el.transform?.scaleY || 1);
+        return { width: w, height: h };
+      }
+
+      // Large photos: rendered > 3 inches in both dimensions, on right half
+      const MIN_EMU = 2743200; // 3 inches in EMU
+      imagePlaceholders = pageElements
+        .filter(el => {
+          if (!el.image) return false;
+          const tx = el.transform?.translateX || 0;
+          const rendered = getRenderedSize(el);
+          return tx > 3500000 && rendered.width > MIN_EMU && rendered.height > MIN_EMU;
+        })
+        .sort((a, b) => {
+          const ay = a.transform?.translateY || 0;
+          const by = b.transform?.translateY || 0;
+          return ay - by;
+        })
+        .slice(0, 2);
+    }
+
+    console.log(`Found ${imagePlaceholders.length} image placeholders for replacement`);
+    imagePlaceholders.forEach((el, i) => {
       const t = el.transform || {};
-      console.log(`  Image[${idx}] id=${el.objectId} tX=${t.translateX} tY=${t.translateY} sX=${t.scaleX} sY=${t.scaleY}`);
+      console.log(`  Placeholder[${i}] id=${el.objectId} tX=${t.translateX} tY=${t.translateY}`);
     });
-
-    // Find image placeholders on the right side of the slide
-    const imagePlaceholders = pageElements
-      .filter(el => {
-        if (!el.image) return false;
-        const tx = el.transform?.translateX || 0;
-        // Right half of slide: translateX > 3.5M EMU (~3.8 inches from left)
-        return tx > 3500000;
-      })
-      .sort((a, b) => {
-        // Sort by Y position (top first) to match template order
-        const ay = a.transform?.translateY || 0;
-        const by = b.transform?.translateY || 0;
-        return ay - by;
-      })
-      .slice(0, 2); // Only take first 2 image placeholders
-
-    console.log(`Found ${imagePlaceholders.length} image placeholder areas (using max 2)`);
 
     const imageRequests = [];
     for (let i = 0; i < Math.min(imagePlaceholders.length, imagesToUse.length); i++) {
@@ -275,7 +291,7 @@ export async function exportProductToSlides(product) {
         replaceImage: {
           imageObjectId: imagePlaceholders[i].objectId,
           url: imageUrl,
-          imageReplaceMethod: 'CENTER_INSIDE',
+          imageReplaceMethod: 'CENTER_CROP',
         },
       });
     }
@@ -443,4 +459,52 @@ export async function downloadPresentationAsPptx(presentationId) {
   });
 
   return { stream: response.data, fileName };
+}
+
+/**
+ * Inspect template slide — returns all page elements with their types, positions, and sizes.
+ * Used for debugging image placeholder detection.
+ */
+export async function inspectTemplate() {
+  const auth = await getAuthClient();
+  const slides = google.slides({ version: 'v1', auth });
+
+  const presentation = await slides.presentations.get({
+    presentationId: TEMPLATE_SLIDE_ID,
+  });
+
+  const slide = presentation.data.slides[0];
+  const pageElements = slide.pageElements || [];
+
+  return pageElements.map((el, idx) => {
+    const t = el.transform || {};
+    const sizeW = el.size?.width?.magnitude || 0;
+    const sizeH = el.size?.height?.magnitude || 0;
+    const renderedW = sizeW * Math.abs(t.scaleX || 1);
+    const renderedH = sizeH * Math.abs(t.scaleY || 1);
+
+    return {
+      index: idx,
+      objectId: el.objectId,
+      type: el.image ? 'IMAGE' : el.shape ? 'SHAPE' : el.table ? 'TABLE' : el.elementGroup ? 'GROUP' : 'OTHER',
+      transform: {
+        translateX: t.translateX || 0,
+        translateY: t.translateY || 0,
+        scaleX: t.scaleX || 1,
+        scaleY: t.scaleY || 1,
+        unit: t.unit || 'EMU',
+      },
+      size: { width: sizeW, height: sizeH },
+      rendered: { width: Math.round(renderedW), height: Math.round(renderedH) },
+      renderedInches: {
+        width: (renderedW / 914400).toFixed(2),
+        height: (renderedH / 914400).toFixed(2),
+      },
+      positionInches: {
+        x: ((t.translateX || 0) / 914400).toFixed(2),
+        y: ((t.translateY || 0) / 914400).toFixed(2),
+      },
+      imageUrl: el.image?.contentUrl ? el.image.contentUrl.substring(0, 80) + '...' : null,
+    };
+  });
 }

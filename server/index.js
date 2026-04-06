@@ -5,7 +5,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import dotenv from 'dotenv';
 import sharp from 'sharp';
 import pdfParse from 'pdf-parse';
-import { exportProductToSlides, exportMultipleProductsToSlides, downloadPresentationAsPptx } from './slidesExporter.js';
+import { exportProductToSlides, exportMultipleProductsToSlides, downloadPresentationAsPptx, inspectTemplate } from './slidesExporter.js';
 
 dotenv.config();
 
@@ -649,6 +649,24 @@ app.get('/api/export-slides/download/:id', async (req, res) => {
   }
 });
 
+// Debug: Inspect template slide elements
+app.get('/api/inspect-template', async (req, res) => {
+  try {
+    const elements = await inspectTemplate();
+    const images = elements.filter(e => e.type === 'IMAGE');
+    res.json({
+      success: true,
+      totalElements: elements.length,
+      imageCount: images.length,
+      images,
+      allElements: elements,
+    });
+  } catch (error) {
+    console.error('Inspect template error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Start server
 app.listen(PORT, () => {
   console.log(`🚀 Claude Proxy Server running on port ${PORT}`);
@@ -657,6 +675,7 @@ app.listen(PORT, () => {
   console.log(`🔍 AI Search endpoint: POST http://localhost:${PORT}/api/ai-search`);
   console.log(`📊 Export Slides: POST http://localhost:${PORT}/api/export-slides`);
   console.log(`📊 Batch Export: POST http://localhost:${PORT}/api/export-slides-batch`);
+  console.log(`🔧 Inspect Template: GET http://localhost:${PORT}/api/inspect-template`);
 });
 
 /**
