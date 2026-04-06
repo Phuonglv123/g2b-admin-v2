@@ -303,11 +303,18 @@ export async function exportProductToSlides(product) {
       });
       console.log(`Replaced ${imageRequests.length} images`);
 
-      // 5b. Resize images to 75% — keep right-edge aligned, center vertically
-      const SCALE_FACTOR = 0.75;
+      // 5b. Resize images to exact dimensions (inches → EMU)
+      const EMU_PER_INCH = 914400;
+      const targetSizes = {
+        'g3d25dc2f435_0_4': { w: 5.02 * EMU_PER_INCH, h: 2.70 * EMU_PER_INCH }, // Image 1
+        'g3d25dc2f435_0_6': { w: 2.66 * EMU_PER_INCH, h: 1.81 * EMU_PER_INCH }, // Image 2
+      };
       const resizeRequests = [];
 
       for (const placeholder of imagePlaceholders) {
+        const target = targetSizes[placeholder.objectId];
+        if (!target) continue;
+
         const t = placeholder.transform || {};
         const sizeW = placeholder.size?.width?.magnitude || 0;
         const sizeH = placeholder.size?.height?.magnitude || 0;
@@ -320,17 +327,17 @@ export async function exportProductToSlides(product) {
         const renderedW = sizeW * Math.abs(oldSX);
         const renderedH = sizeH * Math.abs(oldSY);
 
-        // Shrink amount
-        const deltaW = renderedW * (1 - SCALE_FACTOR);
-        const deltaH = renderedH * (1 - SCALE_FACTOR);
+        // New scale to achieve target size
+        const newSX = (target.w / sizeW) * Math.sign(oldSX || 1);
+        const newSY = (target.h / sizeH) * Math.sign(oldSY || 1);
 
-        // New transform: shift right by deltaW (keep right edge), shift down by deltaH/2 (center Y)
-        const newSX = oldSX * SCALE_FACTOR;
-        const newSY = oldSY * SCALE_FACTOR;
-        const newTX = oldTX + deltaW;       // right-edge aligned
-        const newTY = oldTY + deltaH / 2;   // vertically centered
+        // Shift to keep right-edge aligned, vertically centered
+        const deltaW = renderedW - target.w;
+        const deltaH = renderedH - target.h;
+        const newTX = oldTX + deltaW;
+        const newTY = oldTY + deltaH / 2;
 
-        console.log(`  Resize ${placeholder.objectId}: ${(renderedW/914400).toFixed(1)}"x${(renderedH/914400).toFixed(1)}" → ${(renderedW*SCALE_FACTOR/914400).toFixed(1)}"x${(renderedH*SCALE_FACTOR/914400).toFixed(1)}"`);
+        console.log(`  Resize ${placeholder.objectId}: ${(renderedW/EMU_PER_INCH).toFixed(2)}"x${(renderedH/EMU_PER_INCH).toFixed(2)}" → ${(target.w/EMU_PER_INCH).toFixed(2)}"x${(target.h/EMU_PER_INCH).toFixed(2)}"`);
 
         resizeRequests.push({
           updatePageElementTransform: {
@@ -354,7 +361,7 @@ export async function exportProductToSlides(product) {
           presentationId: newPresentationId,
           requestBody: { requests: resizeRequests },
         });
-        console.log(`Resized ${resizeRequests.length} images to ${SCALE_FACTOR * 100}%`);
+        console.log(`Resized ${resizeRequests.length} images to exact target sizes`);
       }
     }
   }
