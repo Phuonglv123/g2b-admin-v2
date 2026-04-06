@@ -297,51 +297,63 @@ export async function exportProductToSlides(product) {
     }
 
     if (imageRequests.length > 0) {
+      const placeholderIds = imagePlaceholders.map(p => p.objectId);
+
       await slides.presentations.batchUpdate({
         presentationId: newPresentationId,
         requestBody: { requests: imageRequests },
       });
       console.log(`Replaced ${imageRequests.length} images`);
 
-      // 5b. Resize images to exact dimensions (PT → EMU)
-      const EMU_PER_PT = 12700;
+      // 5b. Re-fetch presentation to get updated element data after replaceImage
+      const updatedPres = await slides.presentations.get({ presentationId: newPresentationId });
+      const updatedPage = updatedPres.data.slides?.[0];
+      const updatedElements = updatedPage?.pageElements || [];
+
+      // Target sizes in EMU (1 inch = 914400 EMU)
+      // Slide width = 10" = 9144000 EMU, right margin = 0.2"
+      const EMU_PER_INCH = 914400;
+      const SLIDE_WIDTH = 10 * EMU_PER_INCH;
+      const RIGHT_MARGIN = 0.4 * EMU_PER_INCH; // 0.4" from right edge
       const targetSizes = {
-        'g3d25dc2f435_0_4': { w: 361.44 * EMU_PER_PT, h: 194.40 * EMU_PER_PT }, // Image 1: 5.02" × 2.70"
-        'g3d25dc2f435_0_6': { w: 191.52 * EMU_PER_PT, h: 130.32 * EMU_PER_PT }, // Image 2: 2.66" × 1.81"
+        'g3d25dc2f435_0_4': { w: 4.2 * EMU_PER_INCH, h: 2.3 * EMU_PER_INCH, topOffset: 0.3 * EMU_PER_INCH },  // Image 1 + push down 0.3"
+        'g3d25dc2f435_0_6': { w: 2.2 * EMU_PER_INCH, h: 1.5 * EMU_PER_INCH, topOffset: 0 },  // Image 2
       };
       const resizeRequests = [];
 
-      for (const placeholder of imagePlaceholders) {
-        const target = targetSizes[placeholder.objectId];
+      for (const id of placeholderIds) {
+        const target = targetSizes[id];
         if (!target) continue;
 
-        const t = placeholder.transform || {};
-        const sizeW = placeholder.size?.width?.magnitude || 0;
-        const sizeH = placeholder.size?.height?.magnitude || 0;
+        const el = updatedElements.find(e => e.objectId === id);
+        if (!el) { console.log(`  Element ${id} not found after replace`); continue; }
+
+        const t = el.transform || {};
+        const sizeW = el.size?.width?.magnitude || 0;
+        const sizeH = el.size?.height?.magnitude || 0;
         const oldSX = t.scaleX || 1;
         const oldSY = t.scaleY || 1;
         const oldTX = t.translateX || 0;
         const oldTY = t.translateY || 0;
 
-        // Current rendered dimensions
+        // Current rendered dimensions (after replaceImage)
         const renderedW = sizeW * Math.abs(oldSX);
         const renderedH = sizeH * Math.abs(oldSY);
 
-        // New scale to achieve target size
+        // New scale to achieve exact target size
         const newSX = (target.w / sizeW) * Math.sign(oldSX || 1);
         const newSY = (target.h / sizeH) * Math.sign(oldSY || 1);
 
-        // Shift to keep right-edge aligned, vertically centered
-        const deltaW = renderedW - target.w;
+        // Position: right-edge aligned with margin, vertically centered + optional top offset
+        const newTX = SLIDE_WIDTH - RIGHT_MARGIN - target.w; // flush to right margin
         const deltaH = renderedH - target.h;
-        const newTX = oldTX + deltaW;
-        const newTY = oldTY + deltaH / 2;
+        const newTY = oldTY + deltaH / 2 + (target.topOffset || 0);
 
-        console.log(`  Resize ${placeholder.objectId}: ${(renderedW/EMU_PER_PT).toFixed(1)}pt x ${(renderedH/EMU_PER_PT).toFixed(1)}pt → ${(target.w/EMU_PER_PT).toFixed(1)}pt x ${(target.h/EMU_PER_PT).toFixed(1)}pt`);
+        console.log(`  Resize ${id}: ${(renderedW/EMU_PER_INCH).toFixed(2)}" x ${(renderedH/EMU_PER_INCH).toFixed(2)}" → ${(target.w/EMU_PER_INCH).toFixed(2)}" x ${(target.h/EMU_PER_INCH).toFixed(2)}"`);
 
         resizeRequests.push({
           updatePageElementTransform: {
-            objectId: placeholder.objectId,
+            objectId: id,
             applyMode: 'ABSOLUTE',
             transform: {
               scaleX: newSX,
