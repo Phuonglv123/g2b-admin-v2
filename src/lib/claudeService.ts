@@ -309,7 +309,7 @@ function normalizeProductData(data: Partial<ExtractedProductData>): ExtractedPro
 
   return {
     product_code: data.product_code || '',
-    product_name: data.product_name || 'Sản phẩm chưa đặt tên',
+    product_name: (data.product_name || 'Sản phẩm chưa đặt tên').slice(0, 40),
     type: validTypes.includes(data.type as ProductType) ? (data.type as ProductType) : 'billboard',
     areas: Array.isArray(data.areas) ? data.areas : [],
     cost: parsedCost,

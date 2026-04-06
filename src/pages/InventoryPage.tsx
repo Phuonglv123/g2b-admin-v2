@@ -141,13 +141,13 @@ const InventoryPage = () => {
   const [aiSearchError, setAiSearchError] = useState<string | null>(null)
 
   // Export states
-  const [isExporting, setIsExporting] = useState(false)
+  const [exportingProductId, setExportingProductId] = useState<string | null>(null)
   const [exportResult, setExportResult] = useState<SlideExportResult | null>(null)
   const [exportError, setExportError] = useState<string | null>(null)
 
   // Export to Google Slides handler
   const handleExportToSlides = async (product: ProductWithRelations) => {
-    setIsExporting(true)
+    setExportingProductId(product.id)
     setExportError(null)
     setExportResult(null)
     try {
@@ -163,7 +163,7 @@ const InventoryPage = () => {
     } catch (err) {
       setExportError(err instanceof Error ? err.message : 'Export failed')
     } finally {
-      setIsExporting(false)
+      setExportingProductId(null)
     }
   }
 
@@ -1074,10 +1074,10 @@ const InventoryPage = () => {
                           variant="ghost"
                           size="sm"
                           onClick={() => handleExportToSlides(product)}
-                          disabled={isExporting}
+                          disabled={exportingProductId === product.id}
                           title="Export to Google Slides"
                         >
-                          {isExporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileDown className="h-4 w-4 text-blue-500" />}
+                          {exportingProductId === product.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileDown className="h-4 w-4 text-blue-500" />}
                         </Button>
                         <Button
                           variant="ghost"
@@ -1399,9 +1399,9 @@ const InventoryPage = () => {
               onClick={() => {
                 if (selectedProduct) handleExportToSlides(selectedProduct)
               }}
-              disabled={isExporting}
+              disabled={!!exportingProductId}
             >
-              {isExporting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileDown className="mr-2 h-4 w-4" />}
+              {exportingProductId ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileDown className="mr-2 h-4 w-4" />}
               Export PPT
             </Button>
             <Button

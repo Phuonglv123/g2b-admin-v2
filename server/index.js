@@ -56,7 +56,7 @@ Hãy phân tích kỹ toàn bộ nội dung và trích xuất chính xác từng
 | Thông tin trong PDF | Field JSON | Ghi chú |
 |---|---|---|
 | Mã vị trí / Mã sản phẩm / Code / Location Code | product_code | Giữ nguyên mã gốc nếu có |
-| Tên vị trí / Tên bảng / Vị trí / Location | product_name | Tên đầy đủ |
+| Tên vị trí / Tên bảng / Vị trí / Location | product_name | Tên ngắn gọn, TỐI ĐA 40 KÝ TỰ (tính cả dấu cách). Nếu tên gốc dài hơn 40 ký tự, hãy rút gọn nhưng giữ thông tin quan trọng (tên đường, quận/phường) |
 | Loại hình / Loại bảng / Hình thức / Format | type | billboard/led/digital/banner/poster/transit/other |
 | Số nhà | location.street_number | Ví dụ: "123", "45A" |
 | Tên đường | location.street_name | Ví dụ: "Nguyễn Văn Linh" |
@@ -110,7 +110,7 @@ Hãy phân tích kỹ toàn bộ nội dung và trích xuất chính xác từng
   "products": [
     {
       "product_code": "Mã sản phẩm (giữ nguyên từ PDF nếu có, hoặc để trống)",
-      "product_name": "Tên đầy đủ của vị trí/sản phẩm",
+      "product_name": "Tên vị trí/sản phẩm (TỐI ĐA 40 ký tự, tính cả dấu cách)",
       "type": "billboard | digital | led | transit | poster | banner | other",
       "areas": ["Khu vực"],
       "cost": 0,
@@ -172,6 +172,7 @@ Hãy phân tích kỹ toàn bộ nội dung và trích xuất chính xác từng
 12. product_code: Giữ nguyên mã từ PDF nếu có; nếu không có thì để trống
 13. ⚠️ NHẮC LẠI: OTC/VAC/traffic/lưu lượng → field "traffic", KHÔNG PHẢI "cost"
 14. Trả về ĐÚNG JSON, KHÔNG có text thừa trước hoặc sau JSON
+15. product_name: TỐI ĐA 40 ký tự (tính cả dấu cách). Nếu tên gốc dài hơn, rút gọn thông minh: giữ tên đường + quận/phường, bỏ bớt từ thừa. VD: "Bảng LED Nguyễn Văn Linh, Q.7, TP.HCM"
 `;
 
 // AI Search prompt for product recommendations
