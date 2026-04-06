@@ -29,9 +29,21 @@ async function getAuthClient() {
 /**
  * Build placeholder map from product data
  */
+/**
+ * Extract only numeric value from a string. Returns '0' if no number found.
+ */
+function extractNumber(str) {
+  if (!str) return '0';
+  const match = String(str).replace(/,/g, '').match(/[\d.]+/);
+  return match ? match[0] : '0';
+}
+
 function buildPlaceholderMap(product) {
   const attrs = product.attributes || {};
   
+  // Truncate product name to max 40 chars
+  const productName = (product.product_name || '').slice(0, 40);
+
   // Format dimension
   const dimension = (attrs.width && attrs.height) 
     ? `${attrs.width}m W x ${attrs.height}mH` 
@@ -80,8 +92,8 @@ function buildPlaceholderMap(product) {
   // LED count  
   const ledCount = attrs.quantity_of_ad || '';
 
-  // Traffic
-  const traffic = product.traffic || '';
+  // Traffic - extract only numbers, default '0'
+  const traffic = extractNumber(product.traffic);
 
   // Local tax
   const localTax = product.local_tax 
@@ -94,8 +106,8 @@ function buildPlaceholderMap(product) {
   // Visibility from note
   const visibility = attrs.note || '';
 
-  // Description
-  const description = product.description || '';
+  // Description - max 200 chars
+  const description = (product.description || '').slice(0, 200);
 
   // City province
   const cityProvince = product.city_province || '';
@@ -109,12 +121,12 @@ function buildPlaceholderMap(product) {
   // Booking duration
   const bookingDuration = product.booking_duration || '';
 
-  // Spots per day - extract number from frequency
-  const spotsDay = attrs.frequency || '';
+  // Spots per day - extract only number from frequency
+  const spotsDay = extractNumber(attrs.frequency);
 
   return {
     // Double-brace format {{key}}
-    '{{product_name}}': product.product_name || '',
+    '{{product_name}}': productName,
     '{{product_code}}': product.product_code || '',
     '{{led_count}}': String(ledCount),
     '{{traffic}}': traffic,
@@ -139,9 +151,9 @@ function buildPlaceholderMap(product) {
     '{{currency}}': currency,
     
     // Single-brace format {key} — matching template in screenshot
-    '{product_name}': product.product_name || '',
+    '{product_name}': productName,
     '{product_code}': product.product_code || '',
-    '{location_name}': product.location_name || product.product_name || '',
+    '{location_name}': (product.location_name || product.product_name || '').slice(0, 40),
     '{location_address}': address,
     '{type}': formatLabel,
     '{attributes.width}': attrs.width ? `${attrs.width}m W` : '',
@@ -216,39 +228,47 @@ export async function exportProductToSlides(product) {
     console.log(`Applied ${requests.length} text replacements`);
   }
 
-  // 5. Handle image replacements by detecting existing image areas on the slide
-  // The template has 2 large embedded images on the right side:
-  //   - Top-right: large landscape/city photo area (translateX > 4M EMU, scaleX > 200)
-  //   - Bottom-right: smaller product close-up area (translateX > 4M EMU, scaleX > 200)
-  // We detect them by position & scale, then use replaceImage to swap content in-place.
-  if (product.images && product.images.length > 0) {
+  // 5. Handle image replacements — only use first 2 images
+  // Template layout (based on EMU coordinates):
+  //   - Top-right (cols 7-13, rows 1-3): large hero image — translateX ~4.5M+, translateY < 2M
+  //   - Bottom-right (cols 9-12, rows 4-5): smaller feature image — translateX ~5.5M+, translateY > 2M
+  // We detect image elements by position on the right half, sort by Y, and replace max 2.
+  const imagesToUse = (product.images || []).slice(0, 2);
+  if (imagesToUse.length > 0) {
     const presentation = await slides.presentations.get({
       presentationId: newPresentationId,
     });
     const slide = presentation.data.slides[0];
     const pageElements = slide.pageElements || [];
 
-    // Find large image elements on the right half of the slide
+    // Log all image elements for debugging
+    const allImages = pageElements.filter(el => el.image);
+    allImages.forEach((el, idx) => {
+      const t = el.transform || {};
+      console.log(`  Image[${idx}] id=${el.objectId} tX=${t.translateX} tY=${t.translateY} sX=${t.scaleX} sY=${t.scaleY}`);
+    });
+
+    // Find image placeholders on the right side of the slide
     const imagePlaceholders = pageElements
       .filter(el => {
         if (!el.image) return false;
         const tx = el.transform?.translateX || 0;
-        const sx = Math.abs(el.transform?.scaleX || 0);
-        // Right side (translateX > 4M EMU ≈ 4.37") and large scale (> 200)
-        return tx > 4000000 && sx > 200;
+        // Right half of slide: translateX > 3.5M EMU (~3.8 inches from left)
+        return tx > 3500000;
       })
       .sort((a, b) => {
-        // Sort by Y position (top first)
+        // Sort by Y position (top first) to match template order
         const ay = a.transform?.translateY || 0;
         const by = b.transform?.translateY || 0;
         return ay - by;
-      });
+      })
+      .slice(0, 2); // Only take first 2 image placeholders
 
-    console.log(`Found ${imagePlaceholders.length} image placeholder areas`);
+    console.log(`Found ${imagePlaceholders.length} image placeholder areas (using max 2)`);
 
     const imageRequests = [];
-    for (let i = 0; i < Math.min(imagePlaceholders.length, product.images.length); i++) {
-      const imageUrl = product.images[i];
+    for (let i = 0; i < Math.min(imagePlaceholders.length, imagesToUse.length); i++) {
+      const imageUrl = imagesToUse[i];
       if (!imageUrl) continue;
 
       imageRequests.push({
