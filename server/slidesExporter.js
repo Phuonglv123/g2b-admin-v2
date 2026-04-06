@@ -303,11 +303,11 @@ export async function exportProductToSlides(product) {
       });
       console.log(`Replaced ${imageRequests.length} images`);
 
-      // 5b. Resize images to exact dimensions (inches → EMU)
-      const EMU_PER_INCH = 914400;
+      // 5b. Resize images to exact dimensions (PT → EMU)
+      const EMU_PER_PT = 12700;
       const targetSizes = {
-        'g3d25dc2f435_0_4': { w: 5.02 * EMU_PER_INCH, h: 2.70 * EMU_PER_INCH }, // Image 1
-        'g3d25dc2f435_0_6': { w: 2.66 * EMU_PER_INCH, h: 1.81 * EMU_PER_INCH }, // Image 2
+        'g3d25dc2f435_0_4': { w: 361.44 * EMU_PER_PT, h: 194.40 * EMU_PER_PT }, // Image 1: 5.02" × 2.70"
+        'g3d25dc2f435_0_6': { w: 191.52 * EMU_PER_PT, h: 130.32 * EMU_PER_PT }, // Image 2: 2.66" × 1.81"
       };
       const resizeRequests = [];
 
@@ -337,7 +337,7 @@ export async function exportProductToSlides(product) {
         const newTX = oldTX + deltaW;
         const newTY = oldTY + deltaH / 2;
 
-        console.log(`  Resize ${placeholder.objectId}: ${(renderedW/EMU_PER_INCH).toFixed(2)}"x${(renderedH/EMU_PER_INCH).toFixed(2)}" → ${(target.w/EMU_PER_INCH).toFixed(2)}"x${(target.h/EMU_PER_INCH).toFixed(2)}"`);
+        console.log(`  Resize ${placeholder.objectId}: ${(renderedW/EMU_PER_PT).toFixed(1)}pt x ${(renderedH/EMU_PER_PT).toFixed(1)}pt → ${(target.w/EMU_PER_PT).toFixed(1)}pt x ${(target.h/EMU_PER_PT).toFixed(1)}pt`);
 
         resizeRequests.push({
           updatePageElementTransform: {
