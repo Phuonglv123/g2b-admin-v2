@@ -302,6 +302,60 @@ export async function exportProductToSlides(product) {
         requestBody: { requests: imageRequests },
       });
       console.log(`Replaced ${imageRequests.length} images`);
+
+      // 5b. Resize images to 75% — keep right-edge aligned, center vertically
+      const SCALE_FACTOR = 0.75;
+      const resizeRequests = [];
+
+      for (const placeholder of imagePlaceholders) {
+        const t = placeholder.transform || {};
+        const sizeW = placeholder.size?.width?.magnitude || 0;
+        const sizeH = placeholder.size?.height?.magnitude || 0;
+        const oldSX = t.scaleX || 1;
+        const oldSY = t.scaleY || 1;
+        const oldTX = t.translateX || 0;
+        const oldTY = t.translateY || 0;
+
+        // Current rendered dimensions
+        const renderedW = sizeW * Math.abs(oldSX);
+        const renderedH = sizeH * Math.abs(oldSY);
+
+        // Shrink amount
+        const deltaW = renderedW * (1 - SCALE_FACTOR);
+        const deltaH = renderedH * (1 - SCALE_FACTOR);
+
+        // New transform: shift right by deltaW (keep right edge), shift down by deltaH/2 (center Y)
+        const newSX = oldSX * SCALE_FACTOR;
+        const newSY = oldSY * SCALE_FACTOR;
+        const newTX = oldTX + deltaW;       // right-edge aligned
+        const newTY = oldTY + deltaH / 2;   // vertically centered
+
+        console.log(`  Resize ${placeholder.objectId}: ${(renderedW/914400).toFixed(1)}"x${(renderedH/914400).toFixed(1)}" → ${(renderedW*SCALE_FACTOR/914400).toFixed(1)}"x${(renderedH*SCALE_FACTOR/914400).toFixed(1)}"`);
+
+        resizeRequests.push({
+          updatePageElementTransform: {
+            objectId: placeholder.objectId,
+            applyMode: 'ABSOLUTE',
+            transform: {
+              scaleX: newSX,
+              scaleY: newSY,
+              translateX: newTX,
+              translateY: newTY,
+              shearX: t.shearX || 0,
+              shearY: t.shearY || 0,
+              unit: 'EMU',
+            },
+          },
+        });
+      }
+
+      if (resizeRequests.length > 0) {
+        await slides.presentations.batchUpdate({
+          presentationId: newPresentationId,
+          requestBody: { requests: resizeRequests },
+        });
+        console.log(`Resized ${resizeRequests.length} images to ${SCALE_FACTOR * 100}%`);
+      }
     }
   }
 
