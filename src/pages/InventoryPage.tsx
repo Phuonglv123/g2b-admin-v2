@@ -64,6 +64,7 @@ import { supabase } from '@/lib/supabase'
 import { matchImagesByPagePosition, aiSearchProducts } from '@/lib/claudeService'
 import { exportProductToSlides, type SlideExportResult } from '@/lib/slidesExportService'
 import { exportProductsToExcel } from '@/lib/excelExportService'
+import { geocodeAddress, buildFullAddress as buildGeoFullAddress, formatGPSCoordinates, isValidVietnamCoordinates } from '@/lib/geocodingService'
 import type { ExtractedPDFData, ExtractedProductData, AISearchRecommendation } from '@/lib/claudeService'
 import type {
   ProductWithRelations,
@@ -604,11 +605,43 @@ const InventoryPage = () => {
     // Parse GPS coordinates if available
     let latitude: number | undefined
     let longitude: number | undefined
-    if (data.location.gps_coordinates) {
-      const [lat, lng] = data.location.gps_coordinates.split(',').map(s => parseFloat(s.trim()))
-      if (!isNaN(lat) && !isNaN(lng)) {
+    let gpsCoordinates = data.location.gps_coordinates
+    if (gpsCoordinates) {
+      const [lat, lng] = gpsCoordinates.split(',').map(s => parseFloat(s.trim()))
+      if (!isNaN(lat) && !isNaN(lng) && isValidVietnamCoordinates(lat, lng)) {
         latitude = lat
         longitude = lng
+        console.log(`✅ Using AI-provided GPS: ${lat}, ${lng}`)
+      } else {
+        console.warn(`⚠️ Invalid GPS from AI: ${gpsCoordinates}`)
+        gpsCoordinates = undefined
+      }
+    }
+
+    // If AI didn't provide valid GPS, geocode from address
+    if (!latitude || !longitude) {
+      const fullAddress = buildGeoFullAddress(
+        data.location.street_number,
+        data.location.street_name,
+        data.location.ward,
+        data.location.city_province
+      )
+
+      if (fullAddress && fullAddress.length > 5) {
+        console.log(`🔍 Geocoding address: ${fullAddress}`)
+        try {
+          const geocodeResult = await geocodeAddress(fullAddress)
+          if (geocodeResult && isValidVietnamCoordinates(geocodeResult.latitude, geocodeResult.longitude)) {
+            latitude = geocodeResult.latitude
+            longitude = geocodeResult.longitude
+            gpsCoordinates = formatGPSCoordinates(latitude, longitude)
+            console.log(`✅ Geocoded successfully (${geocodeResult.provider}): ${latitude}, ${longitude}`)
+          } else {
+            console.warn(`⚠️ Geocoding returned no valid result for: ${fullAddress}`)
+          }
+        } catch (error) {
+          console.error(`❌ Geocoding error:`, error)
+        }
       }
     }
 
@@ -642,7 +675,7 @@ const InventoryPage = () => {
       city_province: data.location.city_province || 'Ho Chi Minh',
       latitude,
       longitude,
-      gps_coordinates: data.location.gps_coordinates,
+      gps_coordinates: gpsCoordinates,
       landmark: data.location.landmark,
       local_tax: data.location.local_tax,
       attributes: data.attributes,
