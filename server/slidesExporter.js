@@ -8,6 +8,10 @@ const __dirname = path.dirname(__filename);
 // Template Slide ID
 const TEMPLATE_SLIDE_ID = process.env.GOOGLE_SLIDES_TEMPLATE_ID || '1OljbL0izqkxUcg2VyDHIWbyMw9vK0qmLNBvNqwBxOSw';
 
+// Placeholder image for products without photos
+// A simple grey image with "No Image" text, hosted on a reliable public CDN
+const PLACEHOLDER_IMAGE_URL = process.env.PLACEHOLDER_IMAGE_URL || 'https://placehold.co/800x600/e2e8f0/64748b?text=No+Image+Available';
+
 // Scopes for Google Slides & Drive
 const SCOPES = [
   'https://www.googleapis.com/auth/presentations',
@@ -234,9 +238,18 @@ export async function exportProductToSlides(product) {
   //   - Bottom-right feature: objectId "g3d25dc2f435_0_6" (5.37" x 3.79" at x=5.22", y=1.80")
   // We use known objectIds as primary strategy, with dynamic fallback.
   const KNOWN_IMAGE_IDS = ['g3d25dc2f435_0_4', 'g3d25dc2f435_0_6'];
-  const imagesToUse = (product.images || []).slice(0, 2);
+  
+  // Filter valid image URLs (must be http/https and not empty)
+  const validImages = (product.images || [])
+    .filter(url => url && typeof url === 'string' && /^https?:\/\/.+/.test(url.trim()))
+    .slice(0, 2);
 
-  if (imagesToUse.length > 0) {
+  // Use placeholder images when product has no valid images
+  const imagesToUse = validImages.length > 0 
+    ? validImages 
+    : [PLACEHOLDER_IMAGE_URL, PLACEHOLDER_IMAGE_URL];
+
+  {
     const presentation = await slides.presentations.get({
       presentationId: newPresentationId,
     });
@@ -299,11 +312,42 @@ export async function exportProductToSlides(product) {
     if (imageRequests.length > 0) {
       const placeholderIds = imagePlaceholders.map(p => p.objectId);
 
-      await slides.presentations.batchUpdate({
-        presentationId: newPresentationId,
-        requestBody: { requests: imageRequests },
-      });
-      console.log(`Replaced ${imageRequests.length} images`);
+      // Try replacing images; handle failures gracefully (e.g. inaccessible URLs)
+      try {
+        await slides.presentations.batchUpdate({
+          presentationId: newPresentationId,
+          requestBody: { requests: imageRequests },
+        });
+        console.log(`Replaced ${imageRequests.length} images`);
+      } catch (imgErr) {
+        console.warn(`⚠️ Batch image replace failed: ${imgErr.message}`);
+        
+        // Retry one by one — skip individual failures and try placeholder fallback
+        for (const req of imageRequests) {
+          try {
+            await slides.presentations.batchUpdate({
+              presentationId: newPresentationId,
+              requestBody: { requests: [req] },
+            });
+          } catch (singleErr) {
+            console.warn(`⚠️ Image replace failed for ${req.replaceImage.imageObjectId}, trying placeholder...`);
+            try {
+              await slides.presentations.batchUpdate({
+                presentationId: newPresentationId,
+                requestBody: { requests: [{
+                  replaceImage: {
+                    ...req.replaceImage,
+                    url: PLACEHOLDER_IMAGE_URL,
+                  },
+                }] },
+              });
+              console.log(`✅ Used placeholder for ${req.replaceImage.imageObjectId}`);
+            } catch (placeholderErr) {
+              console.warn(`⚠️ Placeholder also failed for ${req.replaceImage.imageObjectId}, skipping`);
+            }
+          }
+        }
+      }
 
       // 5b. Re-fetch presentation to get updated element data after replaceImage
       const updatedPres = await slides.presentations.get({ presentationId: newPresentationId });
@@ -483,6 +527,61 @@ export async function exportMultipleProductsToSlides(products) {
         presentationId,
         requestBody: { requests: replaceRequests },
       });
+    }
+
+    // Replace images on duplicated slides
+    const validImages = (product.images || [])
+      .filter(url => url && typeof url === 'string' && /^https?:\/\/.+/.test(url.trim()))
+      .slice(0, 2);
+    const slideImages = validImages.length > 0
+      ? validImages
+      : [PLACEHOLDER_IMAGE_URL, PLACEHOLDER_IMAGE_URL];
+
+    // Find image elements on the newly duplicated slides
+    const updatedPres = await slides.presentations.get({ presentationId });
+    const allSlides = updatedPres.data.slides || [];
+
+    for (const newSlideId of newSlideIds) {
+      const newSlide = allSlides.find(s => s.objectId === newSlideId);
+      if (!newSlide) continue;
+
+      const imageElements = (newSlide.pageElements || [])
+        .filter(el => el.image)
+        .sort((a, b) => (a.transform?.translateY || 0) - (b.transform?.translateY || 0))
+        .slice(0, 2);
+
+      for (let j = 0; j < Math.min(imageElements.length, slideImages.length); j++) {
+        const imgUrl = slideImages[j];
+        if (!imgUrl) continue;
+        try {
+          await slides.presentations.batchUpdate({
+            presentationId,
+            requestBody: { requests: [{
+              replaceImage: {
+                imageObjectId: imageElements[j].objectId,
+                url: imgUrl,
+                imageReplaceMethod: 'CENTER_CROP',
+              },
+            }] },
+          });
+        } catch (imgErr) {
+          console.warn(`⚠️ Image replace failed on duplicated slide, trying placeholder...`);
+          try {
+            await slides.presentations.batchUpdate({
+              presentationId,
+              requestBody: { requests: [{
+                replaceImage: {
+                  imageObjectId: imageElements[j].objectId,
+                  url: PLACEHOLDER_IMAGE_URL,
+                  imageReplaceMethod: 'CENTER_CROP',
+                },
+              }] },
+            });
+          } catch (_) {
+            console.warn(`⚠️ Placeholder also failed, skipping`);
+          }
+        }
+      }
     }
   }
 
