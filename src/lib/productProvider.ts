@@ -142,18 +142,46 @@ export async function updateProduct({ id, ...params }: UpdateProductParams): Pro
     }
   }
 
+  // Build clean update payload with only valid product columns
+  // Exclude product_code (UNIQUE, should not change) and undefined values
+  const updatePayload: Record<string, unknown> = {}
+  const allowedFields = [
+    'product_name', 'type', 'areas', 'status', 'images',
+    'cost', 'production_cost', 'currency', 'traffic', 'booking_duration',
+    'provider_id', 'location_name', 'location_address',
+    'street_number', 'street_name', 'ward', 'city_province',
+    'province_code', 'ward_code', 'latitude', 'longitude',
+    'gps_coordinates', 'landmark', 'local_tax',
+    'attributes', 'description',
+  ]
+
+  for (const key of allowedFields) {
+    const value = (params as Record<string, unknown>)[key]
+    if (value !== undefined) {
+      updatePayload[key] = value
+    }
+  }
+
+  // Override location_address if rebuilt
+  if (location_address) {
+    updatePayload.location_address = location_address
+  }
+
   const { data, error } = await supabase
     .from('products')
-    .update({
-      ...params,
-      ...(location_address && { location_address }),
-    })
+    .update(updatePayload)
     .eq('id', id)
     .select()
-    .single()
 
   if (error) throw error
-  return data as Product
+
+  if (!data || data.length === 0) {
+    throw new Error(
+      'Không thể cập nhật sản phẩm. Có thể bạn không có quyền chỉnh sửa sản phẩm này (chỉ chủ sở hữu mới được phép cập nhật).'
+    )
+  }
+
+  return data[0] as Product
 }
 
 /**
@@ -369,7 +397,10 @@ export function getDefaultAttributes() {
     note: '',
     add_side: 1,
     quantity_of_ad: 1,
-    lighting: 1
+    lighting: '',
+    material: '',
+    illumination_time_from: '',
+    illumination_time_to: '',
   }
 }
 

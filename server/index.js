@@ -51,58 +51,69 @@ Hãy phân tích kỹ toàn bộ nội dung và trích xuất chính xác từng
 1. Tìm tên NHÀ CUNG CẤP từ trang đầu (logo, header, footer, thương hiệu)
 2. Trích xuất TẤT CẢ sản phẩm có trong file PDF
 
-**=== BẢNG MAPPING TRƯỜNG THÔNG TIN ===**
+**=== CÁC NHÓM THÔNG TIN CẦN TRÍCH XUẤT ===**
 
-| Thông tin trong PDF | Field JSON | Ghi chú |
+📋 **VENDOR (Nhà cung cấp)**
+→ provider_name: Tên công ty/thương hiệu từ logo, header, footer trang đầu
+
+📍 **LOCATION OVERVIEW (Tổng quan vị trí)**
+| Thông tin | Field JSON | Ghi chú |
 |---|---|---|
-| Mã vị trí / Mã sản phẩm / Code / Location Code | product_code | Giữ nguyên mã gốc nếu có |
-| Tên vị trí / Tên bảng / Vị trí / Location | product_name | Tên ngắn gọn, TỐI ĐA 40 KÝ TỰ (tính cả dấu cách). Nếu tên gốc dài hơn 40 ký tự, hãy rút gọn nhưng giữ thông tin quan trọng (tên đường, quận/phường) |
-| Loại hình / Loại bảng / Hình thức / Format | type | billboard/led/digital/banner/poster/transit/other |
-| Số nhà | location.street_number | Ví dụ: "123", "45A" |
-| Tên đường | location.street_name | Ví dụ: "Nguyễn Văn Linh" |
-| Phường/Xã | location.ward | Ví dụ: "Phường Bến Nghé" |
-| Tỉnh/Thành phố | location.city_province | Ví dụ: "TP. Hồ Chí Minh" |
-| GPS / Toạ độ | location.gps_coordinates | Format: "lat,lng" |
-| Hướng nhìn / View / Facing | location.landmark | Mô tả hướng/điểm mốc |
-| Kích thước / Size (rộng x cao) | attributes.width, attributes.height | Đơn vị: MÉT |
-| Độ phân giải / Resolution | attributes.pixel_width, attributes.pixel_height | Pixel |
-| Thời lượng spot / Duration | attributes.video_duration | Giây |
-| Thời gian hoạt động / Operating hours | attributes.opera_time_from, attributes.opera_time_to | HH:mm |
-| Tần suất / Frequency / Spots/day | attributes.frequency | Giữ nguyên text |
-| Số mặt / Sides | attributes.add_side | Số |
-| Chiếu sáng / Lighting / Backlit | attributes.lighting | 1=có, 0=không |
+| Site Name / Tên vị trí | product_name | TỐI ĐA 40 KÝ TỰ |
+| Exact Location / Địa chỉ chi tiết | location.address + street components | Tách: street_number, street_name, ward, city_province |
+| Google Maps Pin | location.gps_coordinates | Format: "lat,lng" |
+| Location Highlights / Điểm sáng vị trí | location.landmark | Hướng nhìn, gần ngã tư, trung tâm mua sắm, Unobstructed view... |
+| Mã vị trí / Location Code | product_code | Giữ nguyên mã gốc nếu có |
+
+🔧 **TECHNICAL SPECIFICATIONS (Thông số kỹ thuật)**
+| Thông tin | Field JSON | Ghi chú |
+|---|---|---|
+| Media Type / Loại hình | type | billboard/led/digital/banner/poster/transit/other |
+| Dimensions (W x H) / Kích thước | attributes.width, attributes.height | Đơn vị: MÉT |
+| Number of Faces / Số mặt | attributes.add_side | Số |
+| Resolution / Độ phân giải | attributes.pixel_width, attributes.pixel_height | Pixel (cho LED/LCD) |
+| Lighting System / Hệ thống chiếu sáng | attributes.lighting | Text mô tả, VD: "8 đèn LED pha", "Backlit", "Không" |
+| Material / Vật liệu | attributes.material | VD: "Hiflex (Bạt)", "Backlit Film", "LED Module" |
+| Illumination Time / Thời gian chiếu sáng | attributes.illumination_time_from, attributes.illumination_time_to | VD: "18:00" - "22:00" (dành cho billboard) |
+| Operating Hours / Thời gian hoạt động | attributes.opera_time_from, attributes.opera_time_to | VD: "06:00" - "23:00" (dành cho LED/digital) |
+| Shape / Hình dạng | attributes.shape | rectangle/square/vertical/horizontal/circular/other |
+
+📊 **ADVERTISING PERFORMANCE (Chỉ số hiệu quả)**
+| Thông tin | Field JSON | Ghi chú |
+|---|---|---|
+| Traffic Volume / Impressions (OTS/VAC) | traffic | Giữ nguyên text gốc |
+| Spot Duration / Thời lượng spot | attributes.video_duration | Giây |
+| Frequency/Loop / Tần suất | attributes.frequency | Giữ nguyên text |
+| Ad Slots / Số vị trí quảng cáo | attributes.quantity_of_ad | Số |
+
+💰 **COMMERCIAL TERMS (Điều khoản thương mại)**
+| Thông tin | Field JSON | Ghi chú |
+|---|---|---|
+| Campaign Duration / Thời hạn thuê | booking_duration | VD: "1 tháng", "6 tháng", "1 năm" |
+| Investment / Media Rate / Đơn giá thuê | cost | CHỈ số, bỏ ký tự tiền tệ |
+| Currency / Đơn vị tiền | currency | "VND" hoặc "USD" |
+| Production Fee / Phí sản xuất | production_cost | Giữ nguyên text |
+| Local Tax / Thuế địa phương | location.local_tax | Phần trăm (10, 15...) |
 
 **=== PHÂN BIỆT TRAFFIC VÀ GIÁ (CỰC KỲ QUAN TRỌNG) ===**
 
 ⚠️ TRAFFIC (lưu lượng giao thông) → field "traffic" (giữ nguyên text gốc):
-- Từ khoá nhận biết: "traffic", "lưu lượng", "OTC", "VAC", "lượt/ngày", "xe/ngày", "người/ngày", "vehicles", "pedestrian"
+- Từ khoá nhận biết: "traffic", "lưu lượng", "OTC", "OTS", "VAC", "lượt/ngày", "xe/ngày", "người/ngày", "vehicles", "pedestrian", "impressions"
 - OTC = Ô tô con (passenger cars)
 - VAC = Vận tải các loại (commercial vehicles / trucks)
+- OTS = Opportunity To See
 - Ví dụ ĐÚNG:
   + "OTC/VAC: 120.000" → traffic: "OTC/VAC: 120.000"
   + "Traffic: 50.000 OTC/ngày" → traffic: "50.000 OTC/ngày"
   + "Lưu lượng: 80.000 lượt/ngày" → traffic: "80.000 lượt/ngày"
-  + "45,000 vehicles/day" → traffic: "45,000 vehicles/day"
-  + Dòng ghi "OTC: 30.000 - VAC: 15.000" → traffic: "OTC: 30.000 - VAC: 15.000"
 - ❌ SAI: Đưa số OTC/VAC vào cost
 
 💰 GIÁ (chi phí thuê) → field "cost" (CHỈ lấy số, bỏ ký tự):
-- Từ khoá nhận biết: "đơn giá", "giá thuê", "giá", "price", "rate", "rental", "chi phí thuê", "VND/tháng", "USD/tháng", "VNĐ", "vnđ"
+- Từ khoá nhận biết: "đơn giá", "giá thuê", "giá", "price", "rate", "rental", "chi phí thuê", "investment", "media rate"
 - Thường đi kèm đơn vị tiền tệ (VND, USD, đ, $) và chu kỳ (/tháng, /năm, /month)
-- Ví dụ: "Giá thuê: 120.000.000 VND/tháng" → cost: 120000000
 - ❌ SAI: Đưa số traffic/OTC/VAC vào cost
 
-💡 QUY TẮC: Nếu dòng nào có chứa "OTC", "VAC", "traffic", "lưu lượng" → LUÔN LUÔN đưa vào "traffic", KHÔNG BAO GIỜ vào "cost"
-
-**=== CÁC TRƯỜNG KHÁC ===**
-| Thông tin | Field | Ghi chú |
-|---|---|---|
-| Đơn vị tiền | currency | "VND" hoặc "USD" |
-| Thời hạn thuê | booking_duration | Ví dụ: "1 tháng", "6 tháng" |
-| Chi phí thi công / Production | production_cost | Giữ nguyên text |
-| Thuế địa phương | location.local_tax | Phần trăm (10, 15...) |
-| Khu vực / Area | areas | Mảng string |
-| Ghi chú | attributes.note hoặc description | Thông tin bổ sung |
+💡 QUY TẮC: Nếu dòng nào có chứa "OTC", "VAC", "OTS", "traffic", "lưu lượng", "impressions" → LUÔN LUÔN đưa vào "traffic", KHÔNG BAO GIỜ vào "cost"
 
 **ĐỊNH DẠNG OUTPUT (JSON):**
 {
@@ -126,7 +137,7 @@ Hãy phân tích kỹ toàn bộ nội dung và trích xuất chính xác từng
         "street_name": "",
         "ward": "",
         "city_province": "",
-        "landmark": "Hướng nhìn/Điểm mốc",
+        "landmark": "Hướng nhìn / Điểm sáng vị trí (Location Highlights)",
         "gps_coordinates": "lat,lng",
         "currency": "VND",
         "local_tax": null
@@ -144,7 +155,10 @@ Hãy phân tích kỹ toàn bộ nội dung và trích xuất chính xác từng
         "note": "",
         "add_side": 1,
         "quantity_of_ad": 1,
-        "lighting": 1
+        "lighting": "Mô tả hệ thống chiếu sáng (VD: 8 đèn LED pha, Backlit, Không)",
+        "material": "Vật liệu (VD: Hiflex, Backlit Film, LED Module)",
+        "illumination_time_from": "18:00",
+        "illumination_time_to": "22:00"
       }
     }
   ],
@@ -163,16 +177,19 @@ Hãy phân tích kỹ toàn bộ nội dung và trích xuất chính xác từng
 3. Kích thước: chuyển về MÉT (cm÷100, mm÷1000)
 4. cost: CHỈ số, bỏ dấu chấm/phẩy ngăn hàng nghìn, bỏ ký tự tiền tệ
 5. Thời gian: format HH:mm
-6. "Hướng nhìn" / "View" / "Facing" → landmark
+6. "Hướng nhìn" / "View" / "Facing" / "Location Highlights" → landmark
 7. Không tìm thấy → giá trị mặc định
-8. type: billboard | digital | led | transit | poster | banner | other
+8. type: billboard (bảng tĩnh) | digital (màn hình digital) | led (LED) | transit (phương tiện di động) | poster | banner | other
 9. Địa chỉ: TÁCH rõ street_number, street_name, ward, city_province
 10. GPS: format "lat,lng"
 11. detected_items: Liệt kê các mục/dịch vụ đọc được
 12. product_code: Giữ nguyên mã từ PDF nếu có; nếu không có thì để trống
-13. ⚠️ NHẮC LẠI: OTC/VAC/traffic/lưu lượng → field "traffic", KHÔNG PHẢI "cost"
+13. ⚠️ NHẮC LẠI: OTC/VAC/OTS/traffic/lưu lượng/impressions → field "traffic", KHÔNG PHẢI "cost"
 14. Trả về ĐÚNG JSON, KHÔNG có text thừa trước hoặc sau JSON
-15. product_name: TỐI ĐA 40 ký tự (tính cả dấu cách). Nếu tên gốc dài hơn, rút gọn thông minh: giữ tên đường + quận/phường, bỏ bớt từ thừa. VD: "Bảng LED Nguyễn Văn Linh, Q.7, TP.HCM"
+15. product_name: TỐI ĐA 40 ký tự (tính cả dấu cách)
+16. lighting: Mô tả dạng TEXT (VD: "8 đèn LED pha", "Backlit", "Frontlit", "Không"). KHÔNG dùng số 0/1
+17. material: Vật liệu bảng (VD: "Hiflex (Bạt)", "Backlit Film", "LED Module", "PP"). Để trống nếu không có
+18. illumination_time: Thời gian chiếu sáng riêng (thường 18:00-22:00 cho billboard). Khác với Operating Hours
 `;
 
 // AI Search prompt for product recommendations

@@ -96,8 +96,8 @@ function buildPlaceholderMap(product) {
   // LED count  
   const ledCount = attrs.quantity_of_ad || '';
 
-  // Traffic - extract only numbers, default '0'
-  const traffic = extractNumber(product.traffic);
+  // Traffic - keep full text as-is for meaningful display
+  const traffic = product.traffic ? String(product.traffic) : '';
 
   // Local tax
   const localTax = product.local_tax 

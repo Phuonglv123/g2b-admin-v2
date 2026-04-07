@@ -396,7 +396,20 @@ const InventoryPage = () => {
 
       await updateProduct({
         id: selectedProduct.id,
-        ...formData,
+        product_name: formData.product_name,
+        type: formData.type,
+        areas: formData.areas,
+        status: formData.status,
+        images: formData.images,
+        cost: formData.cost,
+        production_cost: formData.production_cost,
+        currency: formData.currency,
+        traffic: formData.traffic,
+        booking_duration: formData.booking_duration,
+        provider_id: formData.provider_id,
+        attributes: formData.attributes,
+        description: formData.description,
+        location_name: formData.location_name || formData.product_name,
         location_address: locationAddress,
         street_number: locationData.street_number,
         street_name: locationData.street_name,
@@ -415,6 +428,7 @@ const InventoryPage = () => {
       await resetForm()
     } catch (error) {
       console.error('Error updating product:', error)
+      alert(error instanceof Error ? error.message : 'Lỗi cập nhật sản phẩm')
     } finally {
       setIsSubmitting(false)
     }
@@ -1339,9 +1353,22 @@ const InventoryPage = () => {
                     <p>{selectedProduct.attributes.quantity_of_ad || 'N/A'}</p>
                   </div>
                   <div>
-                    <Label className="text-muted-foreground">Lighting</Label>
-                    <p>{selectedProduct.attributes.lighting === 1 ? 'Yes' : 'No'}</p>
+                    <Label className="text-muted-foreground">Lighting System</Label>
+                    <p>{selectedProduct.attributes.lighting || 'N/A'}</p>
                   </div>
+                  <div>
+                    <Label className="text-muted-foreground">Material</Label>
+                    <p>{selectedProduct.attributes.material || 'N/A'}</p>
+                  </div>
+                  {(selectedProduct.attributes.illumination_time_from || selectedProduct.attributes.illumination_time_to) && (
+                    <div>
+                      <Label className="text-muted-foreground">Illumination Time</Label>
+                      <p>
+                        {selectedProduct.attributes.illumination_time_from || '—'} -{' '}
+                        {selectedProduct.attributes.illumination_time_to || '—'}
+                      </p>
+                    </div>
+                  )}
                 </div>
                 {selectedProduct.attributes.note && (
                   <div className="mt-3">
@@ -1788,16 +1815,44 @@ const InventoryPage = () => {
                   />
                 </div>
                 <div>
-                  <Label htmlFor="lighting">Lighting</Label>
-                  <Select
+                  <Label htmlFor="lighting">Lighting System</Label>
+                  <Input
                     id="lighting"
-                    value={String(formData.attributes?.lighting)}
-                    onChange={(e) => updateAttributes('lighting', Number(e.target.value))}
+                    value={formData.attributes?.lighting || ''}
+                    onChange={(e) => updateAttributes('lighting', e.target.value)}
+                    placeholder="VD: 8 đèn LED pha, Backlit..."
                     className="mt-1"
-                  >
-                    <option value="1">Yes</option>
-                    <option value="0">No</option>
-                  </Select>
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="material">Material / Vật liệu</Label>
+                  <Input
+                    id="material"
+                    value={formData.attributes?.material || ''}
+                    onChange={(e) => updateAttributes('material', e.target.value)}
+                    placeholder="VD: Hiflex, Backlit Film, LED Module..."
+                    className="mt-1"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="illumination_time_from">Illumination From</Label>
+                  <Input
+                    id="illumination_time_from"
+                    type="time"
+                    value={formData.attributes?.illumination_time_from || ''}
+                    onChange={(e) => updateAttributes('illumination_time_from', e.target.value)}
+                    className="mt-1"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="illumination_time_to">Illumination To</Label>
+                  <Input
+                    id="illumination_time_to"
+                    type="time"
+                    value={formData.attributes?.illumination_time_to || ''}
+                    onChange={(e) => updateAttributes('illumination_time_to', e.target.value)}
+                    className="mt-1"
+                  />
                 </div>
               </div>
               <div>

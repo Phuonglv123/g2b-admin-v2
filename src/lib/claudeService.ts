@@ -343,7 +343,12 @@ function normalizeProductData(data: Partial<ExtractedProductData>): ExtractedPro
       note: data.attributes?.note || '',
       add_side: parseNumber(data.attributes?.add_side) || 1,
       quantity_of_ad: parseNumber(data.attributes?.quantity_of_ad) || 1,
-      lighting: data.attributes?.lighting ?? 1,
+      lighting: typeof data.attributes?.lighting === 'string'
+        ? data.attributes.lighting
+        : (data.attributes?.lighting === 1 || data.attributes?.lighting === true) ? 'Có' : '',
+      material: data.attributes?.material || '',
+      illumination_time_from: normalizeTime(data.attributes?.illumination_time_from) || '',
+      illumination_time_to: normalizeTime(data.attributes?.illumination_time_to) || '',
     }
   }
 }

@@ -12,7 +12,10 @@ export interface ProductAttributes {
   note: string
   add_side: number
   quantity_of_ad?: number
-  lighting?: number
+  lighting?: string              // Lighting system description, e.g. "8 đèn LED pha", "Backlit"
+  material?: string              // Material, e.g. "Hiflex", "Backlit Film", "LED Module"
+  illumination_time_from?: string // Illumination start time, e.g. "18:00" (for billboard)
+  illumination_time_to?: string   // Illumination end time, e.g. "22:00" (for billboard)
 }
 
 export type ProductType = 'billboard' | 'digital' | 'led' | 'transit' | 'poster' | 'banner' | 'other'
