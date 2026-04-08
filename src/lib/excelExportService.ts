@@ -58,6 +58,7 @@ function getTypeLabel(type: string): string {
 export async function exportProductsToExcel(
   products: ProductWithRelations[],
   meta?: Partial<MetaData>,
+  logoUrl?: string,
 ) {
   const metaData = { ...defaultMeta, ...meta }
   const workbook = new ExcelJS.Workbook()
@@ -65,7 +66,23 @@ export async function exportProductsToExcel(
     `Quotation_G2B_${new Date().getFullYear()}`,
   )
 
-  // -- Meta info rows (rows 1-6, logo can be added later) --
+  // -- Logo image (overlay on A1:C4) --
+  if (logoUrl) {
+    try {
+      const logoResponse = await fetch(logoUrl)
+      const logoBlob = await logoResponse.blob()
+      const logoBuffer = await logoBlob.arrayBuffer()
+      const imageId = workbook.addImage({
+        buffer: logoBuffer,
+        extension: 'png',
+      })
+      worksheet.addImage(imageId, 'A1:C4')
+    } catch {
+      // Skip logo if fetch fails
+    }
+  }
+
+  // -- Meta info rows (rows 1-6) --
   const metaInfo = [
     ['', '', '', '', '', '', 'QUOTATION'],
     [
@@ -287,4 +304,127 @@ export async function exportProductsToExcel(
 
   const firstType = products[0]?.type || 'products'
   saveAs(blob, `Quotation_${getTypeLabel(firstType)}_${new Date().getFullYear()}.xlsx`)
+}
+
+/**
+ * Export a single product's detailed information to Excel
+ */
+export async function exportSingleProductToExcel(product: ProductWithRelations) {
+  const workbook = new ExcelJS.Workbook()
+  const worksheet = workbook.addWorksheet('Product Details')
+
+  const attrs = product.attributes || {}
+
+  // Column widths
+  worksheet.getColumn(1).width = 30
+  worksheet.getColumn(2).width = 50
+
+  // Header style
+  const headerFill: ExcelJS.FillPattern = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FF2563EB' },
+  }
+  const headerFont: Partial<ExcelJS.Font> = { bold: true, color: { argb: 'FFFFFFFF' }, size: 12 }
+  const sectionFill: ExcelJS.FillPattern = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FFDBEAFE' },
+  }
+  const sectionFont: Partial<ExcelJS.Font> = { bold: true, size: 11, color: { argb: 'FF1E40AF' } }
+  const border: Partial<ExcelJS.Borders> = {
+    top: { style: 'thin' },
+    left: { style: 'thin' },
+    bottom: { style: 'thin' },
+    right: { style: 'thin' },
+  }
+
+  // Title row
+  const titleRow = worksheet.addRow(['PRODUCT INFORMATION', ''])
+  worksheet.mergeCells(`A${titleRow.number}:B${titleRow.number}`)
+  titleRow.getCell(1).fill = headerFill
+  titleRow.getCell(1).font = { ...headerFont, size: 14 }
+  titleRow.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' }
+  titleRow.height = 35
+
+  // Helper to add a section header
+  const addSection = (title: string) => {
+    const row = worksheet.addRow([title, ''])
+    worksheet.mergeCells(`A${row.number}:B${row.number}`)
+    row.getCell(1).fill = sectionFill
+    row.getCell(1).font = sectionFont
+    row.getCell(1).border = border
+    row.height = 25
+  }
+
+  // Helper to add a data row
+  const addDataRow = (label: string, value: string | number | null | undefined) => {
+    const row = worksheet.addRow([label, value ?? ''])
+    row.getCell(1).font = { bold: true }
+    row.getCell(1).border = border
+    row.getCell(2).border = border
+    row.getCell(1).alignment = { vertical: 'middle', wrapText: true }
+    row.getCell(2).alignment = { vertical: 'middle', wrapText: true }
+  }
+
+  // == 1. Vendor Information ==
+  addSection('1. VENDOR INFORMATION')
+  addDataRow('Provider', product.provider_name || '')
+  addDataRow('Provider Phone', product.provider_phone || '')
+  addDataRow('Product Code', product.product_code)
+  addDataRow('Product Name', product.product_name)
+  addDataRow('Type', getTypeLabel(product.type))
+  addDataRow('Status', product.status === 1 ? 'Active' : product.status === 0 ? 'Inactive' : 'Maintenance')
+
+  // == 2. Location Overview ==
+  addSection('2. LOCATION OVERVIEW')
+  addDataRow('Location Name', product.location_name || product.product_name)
+  addDataRow('Street Number', product.street_number || '')
+  addDataRow('Street Name', product.street_name || '')
+  addDataRow('Ward', product.ward || '')
+  addDataRow('City/Province', product.city_province || '')
+  addDataRow('Full Address', product.location_address || '')
+  addDataRow('GPS Coordinates', product.gps_coordinates || '')
+  addDataRow('Landmark', product.landmark || '')
+  addDataRow('Traffic', product.traffic || '')
+
+  // == 3. Technical Specifications ==
+  addSection('3. TECHNICAL SPECIFICATIONS')
+  addDataRow('Dimension (W x H)', formatDimension(product))
+  addDataRow('Pixel Resolution', attrs.pixel_width && attrs.pixel_height ? `${attrs.pixel_width} x ${attrs.pixel_height}` : '')
+  addDataRow('Shape', attrs.shape || '')
+  addDataRow('Material', attrs.material || '')
+  addDataRow('Lighting', attrs.lighting || '')
+  addDataRow('Illumination Time', attrs.illumination_time_from && attrs.illumination_time_to ? `${attrs.illumination_time_from} - ${attrs.illumination_time_to}` : '')
+  addDataRow('Ad Sides', attrs.add_side ? String(attrs.add_side) : '')
+  addDataRow('Quantity of Ad', attrs.quantity_of_ad ? String(attrs.quantity_of_ad) : '')
+
+  // == 4. Advertising Performance ==
+  addSection('4. ADVERTISING PERFORMANCE')
+  addDataRow('Video Duration', attrs.video_duration ? `${attrs.video_duration}s` : '')
+  addDataRow('Frequency', attrs.frequency || '')
+  addDataRow('Operation Time', attrs.opera_time_from && attrs.opera_time_to ? `${attrs.opera_time_from} - ${attrs.opera_time_to}` : '')
+
+  // == 5. Commercial Terms ==
+  addSection('5. COMMERCIAL TERMS')
+  addDataRow('Media Cost', product.cost ? `${product.cost.toLocaleString()} ${product.currency || 'VND'}` : '')
+  addDataRow('Production Cost', product.production_cost || '')
+  addDataRow('Local Tax', product.local_tax ? `${product.local_tax}%` : '')
+  addDataRow('Booking Duration', product.booking_duration || '')
+  addDataRow('Currency', product.currency || 'VND')
+
+  // == 6. Additional ==
+  addSection('6. ADDITIONAL')
+  addDataRow('Description', product.description || '')
+  addDataRow('Note', attrs.note || '')
+  addDataRow('Images', product.images?.length ? product.images.join('\n') : 'No images')
+  addDataRow('Created At', product.created_at ? new Date(product.created_at).toLocaleDateString('vi-VN') : '')
+
+  worksheet.views = [{ showGridLines: false }]
+
+  const buffer = await workbook.xlsx.writeBuffer()
+  const blob = new Blob([buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  })
+  saveAs(blob, `${product.product_code || 'Product'}_Details.xlsx`)
 }

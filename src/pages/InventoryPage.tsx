@@ -27,6 +27,9 @@ import {
   FileDown,
   ExternalLink,
   FileSpreadsheet,
+  CheckSquare,
+  Square,
+  MinusSquare,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -62,8 +65,8 @@ import { VietnamAddressSelector } from '@/components/location'
 import { convertAndUploadPdfImages } from '@/lib/convertApiService'
 import { supabase } from '@/lib/supabase'
 import { matchImagesByPagePosition, aiSearchProducts } from '@/lib/claudeService'
-import { exportProductToSlides, type SlideExportResult } from '@/lib/slidesExportService'
-import { exportProductsToExcel } from '@/lib/excelExportService'
+import { exportProductToSlides, exportMultipleProductsToSlides, type SlideExportResult } from '@/lib/slidesExportService'
+import { exportProductsToExcel, exportSingleProductToExcel } from '@/lib/excelExportService'
 import { geocodeAddress, buildFullAddress as buildGeoFullAddress, formatGPSCoordinates, isValidVietnamCoordinates } from '@/lib/geocodingService'
 import type { ExtractedPDFData, ExtractedProductData, AISearchRecommendation } from '@/lib/claudeService'
 import type {
@@ -146,6 +149,10 @@ const InventoryPage = () => {
   const [exportResult, setExportResult] = useState<SlideExportResult | null>(null)
   const [exportError, setExportError] = useState<string | null>(null)
 
+  // Multi-select states
+  const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(new Set())
+  const [isBatchExporting, setIsBatchExporting] = useState(false)
+
   // Export to Google Slides handler
   const handleExportToSlides = async (product: ProductWithRelations) => {
     setExportingProductId(product.id)
@@ -166,6 +173,59 @@ const InventoryPage = () => {
     } finally {
       setExportingProductId(null)
     }
+  }
+
+  // Batch export to Slides handler
+  const handleBatchExportToSlides = async () => {
+    if (selectedProductIds.size === 0) return
+    setIsBatchExporting(true)
+    setExportError(null)
+    try {
+      const selectedProducts = products.filter(p => selectedProductIds.has(p.id))
+      const result = await exportMultipleProductsToSlides(selectedProducts)
+      setExportResult(result)
+      const a = document.createElement('a')
+      a.href = result.downloadUrl
+      a.download = `${result.fileName}.pptx`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      setSelectedProductIds(new Set())
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : 'Batch export failed')
+    } finally {
+      setIsBatchExporting(false)
+    }
+  }
+
+  // Single product Excel export handler
+  const handleExportSingleExcel = (product: ProductWithRelations) => {
+    exportSingleProductToExcel(product)
+  }
+
+  // Toggle product selection
+  const toggleProductSelection = (productId: string) => {
+    setSelectedProductIds(prev => {
+      const next = new Set(prev)
+      if (next.has(productId)) next.delete(productId)
+      else next.add(productId)
+      return next
+    })
+  }
+
+  // Toggle select all (current page)
+  const toggleSelectAll = () => {
+    const currentProducts = isAISearchMode && aiFilteredProducts ? aiFilteredProducts : paginatedProducts
+    const allSelected = currentProducts.every(p => selectedProductIds.has(p.id))
+    setSelectedProductIds(prev => {
+      const next = new Set(prev)
+      if (allSelected) {
+        currentProducts.forEach(p => next.delete(p.id))
+      } else {
+        currentProducts.forEach(p => next.add(p.id))
+      }
+      return next
+    })
   }
 
   // Location form state (embedded in product)
@@ -783,6 +843,20 @@ const InventoryPage = () => {
             <FileSpreadsheet className="mr-2 h-4 w-4 text-green-600" />
             Export Excel
           </Button>
+          {selectedProductIds.size > 0 && (
+            <Button
+              variant="outline"
+              onClick={handleBatchExportToSlides}
+              disabled={isBatchExporting}
+            >
+              {isBatchExporting ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <FileDown className="mr-2 h-4 w-4 text-blue-500" />
+              )}
+              Export PPT ({selectedProductIds.size})
+            </Button>
+          )}
           <Button variant="outline" onClick={() => navigate('/import')}>
             <Sparkles className="mr-2 h-4 w-4" />
             Import with AI
@@ -975,6 +1049,18 @@ const InventoryPage = () => {
           <table className="w-full">
             <thead className="bg-muted/50">
               <tr>
+                <th className="px-4 py-3 w-10">
+                  {(() => {
+                    const currentProducts = isAISearchMode && aiFilteredProducts ? aiFilteredProducts : paginatedProducts
+                    const allSelected = currentProducts.length > 0 && currentProducts.every(p => selectedProductIds.has(p.id))
+                    const someSelected = currentProducts.some(p => selectedProductIds.has(p.id))
+                    return (
+                      <button onClick={toggleSelectAll} className="text-muted-foreground hover:text-foreground">
+                        {allSelected ? <CheckSquare className="h-4 w-4" /> : someSelected ? <MinusSquare className="h-4 w-4" /> : <Square className="h-4 w-4" />}
+                      </button>
+                    )
+                  })()}
+                </th>
                 {isAISearchMode && (
                   <th className="px-4 py-3 text-left text-sm font-medium w-16">Match</th>
                 )}
@@ -1000,6 +1086,11 @@ const InventoryPage = () => {
                   : null
                 return (
                   <tr key={product.id} className={`hover:bg-muted/30 transition-colors ${aiMatch && aiMatch.match_score >= 0.8 ? 'bg-green-500/5' : ''}`}>
+                    <td className="px-4 py-3">
+                      <button onClick={() => toggleProductSelection(product.id)} className="text-muted-foreground hover:text-foreground">
+                        {selectedProductIds.has(product.id) ? <CheckSquare className="h-4 w-4" /> : <Square className="h-4 w-4" />}
+                      </button>
+                    </td>
                     {isAISearchMode && (
                       <td className="px-4 py-3">
                         <div className="flex flex-col items-center gap-1">
@@ -1125,6 +1216,14 @@ const InventoryPage = () => {
                           title="Export to Google Slides"
                         >
                           {exportingProductId === product.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileDown className="h-4 w-4 text-blue-500" />}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleExportSingleExcel(product)}
+                          title="Export Excel"
+                        >
+                          <FileSpreadsheet className="h-4 w-4 text-green-600" />
                         </Button>
                         <Button
                           variant="ghost"
