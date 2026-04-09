@@ -165,8 +165,8 @@ function extractNumber(str) {
 function buildPlaceholderMap(product) {
   const attrs = product.attributes || {};
   
-  // Truncate product name to max 40 chars
-  const productName = (product.product_name || '').slice(0, 40);
+  // Truncate product name to max 14 chars (including spaces)
+  const productName = (product.product_name || '').slice(0, 14);
 
   // Format dimension
   const dimension = (attrs.width && attrs.height) 
@@ -216,8 +216,8 @@ function buildPlaceholderMap(product) {
   // LED count  
   const ledCount = attrs.quantity_of_ad || '';
 
-  // Traffic - keep full text as-is for meaningful display
-  const traffic = product.traffic ? String(product.traffic) : '';
+  // Traffic - truncate to 3 chars for slide layout
+  const traffic = product.traffic ? String(product.traffic).slice(0, 3) : '';
 
   // Local tax
   const localTax = product.local_tax 
@@ -277,7 +277,7 @@ function buildPlaceholderMap(product) {
     // Single-brace format {key} — matching template in screenshot
     '{product_name}': productName,
     '{product_code}': product.product_code || '',
-    '{location_name}': (product.location_name || product.product_name || '').slice(0, 40),
+    '{location_name}': (product.location_name || product.product_name || '').slice(0, 14),
     '{location_address}': address,
     '{type}': formatLabel,
     '{attributes.width}': attrs.width ? `${attrs.width}m W` : '',
