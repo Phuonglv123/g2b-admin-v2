@@ -1,6 +1,7 @@
 import { google } from 'googleapis';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { Readable } from 'stream';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -28,6 +29,114 @@ async function getAuthClient() {
     scopes: SCOPES,
   });
   return auth;
+}
+
+/**
+ * Upload an image from a URL to Google Drive so Google Slides can access it.
+ * Returns a publicly accessible Google Drive content URL.
+ * This solves the problem where self-hosted Supabase URLs are not reachable by Google servers.
+ */
+async function proxyImageToDrive(drive, imageUrl) {
+  try {
+    // Download image from the original URL
+    const response = await fetch(imageUrl, { 
+      signal: AbortSignal.timeout(15000), // 15s timeout
+      headers: { 'User-Agent': 'G2B-Media-Export/1.0' },
+    });
+    if (!response.ok) {
+      console.warn(`⚠️ Failed to download image (${response.status}): ${imageUrl}`);
+      return null;
+    }
+
+    const contentType = response.headers.get('content-type') || 'image/jpeg';
+    const buffer = Buffer.from(await response.arrayBuffer());
+    
+    if (buffer.length < 100) {
+      console.warn(`⚠️ Image too small (${buffer.length} bytes), likely broken: ${imageUrl}`);
+      return null;
+    }
+
+    // Upload to Google Drive
+    const fileMetadata = {
+      name: `g2b-export-${Date.now()}-${Math.random().toString(36).substring(2, 6)}.jpg`,
+      mimeType: contentType,
+    };
+
+    const media = {
+      mimeType: contentType,
+      body: Readable.from(buffer),
+    };
+
+    const driveFile = await drive.files.create({
+      requestBody: fileMetadata,
+      media,
+      fields: 'id, webContentLink',
+    });
+
+    const fileId = driveFile.data.id;
+
+    // Make the file publicly readable
+    await drive.permissions.create({
+      fileId,
+      requestBody: {
+        role: 'reader',
+        type: 'anyone',
+      },
+    });
+
+    // Wait for permission propagation so Google Slides can access the image
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    // Use Google's CDN URL — returns raw image bytes without redirects.
+    // This is the most reliable URL format for Google Slides replaceImage API.
+    const driveUrl = `https://lh3.googleusercontent.com/d/${fileId}`;
+    console.log(`✅ Proxied image to Drive: ${fileId} (${(buffer.length / 1024).toFixed(1)} KB) → ${driveUrl}`);
+    return { url: driveUrl, fileId };
+  } catch (err) {
+    console.warn(`⚠️ Image proxy failed for ${imageUrl}: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Clean up temporary Drive files after export
+ */
+async function cleanupDriveFiles(drive, fileIds) {
+  for (const fileId of fileIds) {
+    try {
+      await drive.files.delete({ fileId });
+    } catch (e) {
+      // Ignore cleanup errors
+    }
+  }
+}
+
+/**
+ * Prepare product images: download from original URLs and upload to Google Drive.
+ * Returns array of { url, fileId } for use in replaceImage, plus cleanup list.
+ */
+/**
+ * Prepare product images for use in Google Slides replaceImage API.
+ * Strategy:
+ *   1. Try original URLs directly (works if publicly accessible from Google servers)
+ *   2. If original URLs fail, proxy through Google Drive
+ *
+ * Returns array of URLs to try, plus cleanup list for temp Drive files.
+ */
+async function prepareProductImages(drive, product, maxImages = 2) {
+  const validImages = (product.images || [])
+    .filter(url => url && typeof url === 'string' && /^https?:\/\/.+/.test(url.trim()))
+    .slice(0, maxImages);
+
+  if (validImages.length === 0) {
+    console.log(`  No valid images for product: ${product.product_name}`);
+    return { primaryUrls: [], fallbackUrls: [], tempFileIds: [] };
+  }
+
+  // Try original URLs first — they're publicly accessible and Google can often reach them directly.
+  // Drive proxy is attempted only as fallback (inside replaceImage retry loop).
+  console.log(`  Prepared ${validImages.length} image URL(s) for product: ${product.product_name}`);
+  return { primaryUrls: validImages, fallbackUrls: [], tempFileIds: [] };
 }
 
 /**
@@ -239,14 +348,12 @@ export async function exportProductToSlides(product) {
   // We use known objectIds as primary strategy, with dynamic fallback.
   const KNOWN_IMAGE_IDS = ['g3d25dc2f435_0_4', 'g3d25dc2f435_0_6'];
   
-  // Filter valid image URLs (must be http/https and not empty)
-  const validImages = (product.images || [])
-    .filter(url => url && typeof url === 'string' && /^https?:\/\/.+/.test(url.trim()))
-    .slice(0, 2);
+  // Prepare image URLs — use original Supabase URLs directly (publicly accessible)
+  const { primaryUrls, tempFileIds } = await prepareProductImages(drive, product, 2);
 
-  // Use placeholder images when product has no valid images
-  const imagesToUse = validImages.length > 0 
-    ? validImages 
+  // Use original images, or placeholder if none available
+  const imagesToUse = primaryUrls.length > 0 
+    ? primaryUrls 
     : [PLACEHOLDER_IMAGE_URL, PLACEHOLDER_IMAGE_URL];
 
   {
@@ -312,7 +419,7 @@ export async function exportProductToSlides(product) {
     if (imageRequests.length > 0) {
       const placeholderIds = imagePlaceholders.map(p => p.objectId);
 
-      // Try replacing images; handle failures gracefully (e.g. inaccessible URLs)
+      // Try replacing images; handle failures gracefully
       try {
         await slides.presentations.batchUpdate({
           presentationId: newPresentationId,
@@ -322,28 +429,34 @@ export async function exportProductToSlides(product) {
       } catch (imgErr) {
         console.warn(`⚠️ Batch image replace failed: ${imgErr.message}`);
         
-        // Retry one by one — skip individual failures and try placeholder fallback
-        for (const req of imageRequests) {
+        // Retry one by one — if original URL fails, try proxying through Drive
+        for (let ri = 0; ri < imageRequests.length; ri++) {
+          const req = imageRequests[ri];
+          const objectId = req.replaceImage.imageObjectId;
+
           try {
             await slides.presentations.batchUpdate({
               presentationId: newPresentationId,
               requestBody: { requests: [req] },
             });
+            console.log(`✅ Replaced image ${objectId}`);
           } catch (singleErr) {
-            console.warn(`⚠️ Image replace failed for ${req.replaceImage.imageObjectId}, trying placeholder...`);
-            try {
-              await slides.presentations.batchUpdate({
-                presentationId: newPresentationId,
-                requestBody: { requests: [{
-                  replaceImage: {
-                    ...req.replaceImage,
-                    url: PLACEHOLDER_IMAGE_URL,
-                  },
-                }] },
-              });
-              console.log(`✅ Used placeholder for ${req.replaceImage.imageObjectId}`);
-            } catch (placeholderErr) {
-              console.warn(`⚠️ Placeholder also failed for ${req.replaceImage.imageObjectId}, skipping`);
+            console.warn(`⚠️ Direct URL failed for ${objectId}: ${singleErr.message}`);
+            // Fallback: proxy through Google Drive
+            const proxied = await proxyImageToDrive(drive, req.replaceImage.url);
+            if (proxied) {
+              tempFileIds.push(proxied.fileId);
+              try {
+                await slides.presentations.batchUpdate({
+                  presentationId: newPresentationId,
+                  requestBody: { requests: [{
+                    replaceImage: { imageObjectId: objectId, url: proxied.url, imageReplaceMethod: 'CENTER_CROP' },
+                  }] },
+                });
+                console.log(`✅ Replaced image ${objectId} via Drive proxy`);
+              } catch (proxyErr) {
+                console.warn(`⚠️ Drive proxy also failed for ${objectId}: ${proxyErr.message}`);
+              }
             }
           }
         }
@@ -383,6 +496,12 @@ export async function exportProductToSlides(product) {
         // Current rendered dimensions (after replaceImage)
         const renderedW = sizeW * Math.abs(oldSX);
         const renderedH = sizeH * Math.abs(oldSY);
+
+        // Skip if size is 0 to avoid Infinity scaling
+        if (sizeW === 0 || sizeH === 0) {
+          console.log(`  Skipping resize for ${id}: element size is 0`);
+          continue;
+        }
 
         // New scale to achieve exact target size
         const newSX = (target.w / sizeW) * Math.sign(oldSX || 1);
@@ -432,6 +551,14 @@ export async function exportProductToSlides(product) {
     },
   });
 
+  // 7. Delayed cleanup — give Google time to fully embed images before deleting source files
+  if (tempFileIds.length > 0) {
+    console.log(`Scheduling cleanup of ${tempFileIds.length} temp Drive files in 60 s...`);
+    setTimeout(() => {
+      cleanupDriveFiles(drive, tempFileIds).catch(() => {});
+    }, 60000);
+  }
+
   const slideUrl = `https://docs.google.com/presentation/d/${newPresentationId}/edit`;
   const exportUrl = `https://docs.google.com/presentation/d/${newPresentationId}/export/pptx`;
 
@@ -445,7 +572,10 @@ export async function exportProductToSlides(product) {
 
 /**
  * Export multiple products - one slide per product
- * Creates a single presentation with multiple slides
+ * Creates a single presentation with multiple slides.
+ *
+ * Key fix: duplicate all slides BEFORE any text replacement so that every
+ * copy still contains the original {{placeholder}} tokens.
  */
 export async function exportMultipleProductsToSlides(products) {
   const auth = await getAuthClient();
@@ -461,65 +591,60 @@ export async function exportMultipleProductsToSlides(products) {
     return exportProductToSlides(products[0]);
   }
 
-  // For multiple products: copy template for first product
-  const firstResult = await exportProductToSlides(products[0]);
-  const presentationId = firstResult.presentationId;
-
-  // Get the template presentation to know slide structure
-  const templatePresentation = await slides.presentations.get({
-    presentationId: TEMPLATE_SLIDE_ID,
+  // 1. Copy the template — all slides still have original placeholders
+  const fileName = `G2B Media - ${products.length} Products Export`;
+  const copyResponse = await drive.files.copy({
+    fileId: TEMPLATE_SLIDE_ID,
+    supportsAllDrives: true,
+    requestBody: { name: fileName },
   });
-  const templateSlideCount = templatePresentation.data.slides?.length || 1;
+  const presentationId = copyResponse.data.id;
+  console.log(`Created presentation copy: ${presentationId}`);
 
-  // For each additional product, duplicate slides and replace
+  // 2. Read the initial (clean) slides
+  const initialPres = await slides.presentations.get({ presentationId });
+  const originalSlideIds = (initialPres.data.slides || []).map(s => s.objectId);
+  console.log(`Template has ${originalSlideIds.length} slide(s)`);
+
+  // 3. Duplicate those clean slides N-1 times BEFORE any text replacement
+  //    so every duplicate still contains the original placeholder tokens.
+  //    productSlideMap[i] = array of slide IDs for product i.
+  const productSlideMap = [];
+  productSlideMap.push([...originalSlideIds]); // product 0 uses the originals
+
   for (let i = 1; i < products.length; i++) {
-    const product = products[i];
-    
-    // Get current presentation state
-    const currentPresentation = await slides.presentations.get({
-      presentationId,
-    });
-    const currentSlides = currentPresentation.data.slides || [];
-
-    // Duplicate template slides (copy from first set)
-    const duplicateRequests = [];
-    for (let s = 0; s < templateSlideCount; s++) {
-      if (currentSlides[s]) {
-        duplicateRequests.push({
-          duplicateObject: {
-            objectId: currentSlides[s].objectId,
-          },
-        });
-      }
-    }
+    const dupRequests = originalSlideIds.map(slideId => ({
+      duplicateObject: { objectId: slideId },
+    }));
 
     const dupResult = await slides.presentations.batchUpdate({
       presentationId,
-      requestBody: { requests: duplicateRequests },
+      requestBody: { requests: dupRequests },
     });
 
-    // Get the new slide object IDs from the duplicate response
     const newSlideIds = dupResult.data.replies
       ?.map(r => r.duplicateObject?.objectId)
       .filter(Boolean) || [];
 
-    // Replace text in new slides only
-    const placeholderMap = buildPlaceholderMap(product);
-    const replaceRequests = [];
+    productSlideMap.push(newSlideIds);
+    console.log(`Duplicated slides for product ${i}: ${newSlideIds.join(', ')}`);
+  }
 
-    for (const newSlideId of newSlideIds) {
-      for (const [placeholder, value] of Object.entries(placeholderMap)) {
-        replaceRequests.push({
-          replaceAllText: {
-            containsText: {
-              text: placeholder,
-              matchCase: true,
-            },
-            replaceText: value,
-            pageObjectIds: [newSlideId],
-          },
-        });
-      }
+  // 4. Apply scoped text replacements per product
+  for (let i = 0; i < products.length; i++) {
+    const product = products[i];
+    const slideIds = productSlideMap[i];
+    const placeholderMap = buildPlaceholderMap(product);
+
+    const replaceRequests = [];
+    for (const [placeholder, value] of Object.entries(placeholderMap)) {
+      replaceRequests.push({
+        replaceAllText: {
+          containsText: { text: placeholder, matchCase: true },
+          replaceText: value,
+          pageObjectIds: slideIds,
+        },
+      });
     }
 
     if (replaceRequests.length > 0) {
@@ -527,71 +652,92 @@ export async function exportMultipleProductsToSlides(products) {
         presentationId,
         requestBody: { requests: replaceRequests },
       });
+      console.log(`Applied text replacements for product ${i}: ${product.product_name}`);
     }
+  }
 
-    // Replace images on duplicated slides
-    const validImages = (product.images || [])
-      .filter(url => url && typeof url === 'string' && /^https?:\/\/.+/.test(url.trim()))
-      .slice(0, 2);
-    const slideImages = validImages.length > 0
-      ? validImages
+  // 5. Replace images per product
+  const allTempFileIds = [];
+
+  for (let i = 0; i < products.length; i++) {
+    const product = products[i];
+    const slideIds = productSlideMap[i];
+
+    const { primaryUrls, tempFileIds } = await prepareProductImages(drive, product, 2);
+    allTempFileIds.push(...tempFileIds);
+
+    const imagesToUse = primaryUrls.length > 0
+      ? primaryUrls
       : [PLACEHOLDER_IMAGE_URL, PLACEHOLDER_IMAGE_URL];
 
-    // Find image elements on the newly duplicated slides
-    const updatedPres = await slides.presentations.get({ presentationId });
-    const allSlides = updatedPres.data.slides || [];
+    // Fetch current state so we get accurate element IDs (duplicates get new IDs)
+    const pres = await slides.presentations.get({ presentationId });
+    const allSlides = pres.data.slides || [];
 
-    for (const newSlideId of newSlideIds) {
-      const newSlide = allSlides.find(s => s.objectId === newSlideId);
-      if (!newSlide) continue;
+    for (const slideId of slideIds) {
+      const slide = allSlides.find(s => s.objectId === slideId);
+      if (!slide) continue;
 
-      const imageElements = (newSlide.pageElements || [])
+      // Find image elements sorted by vertical position (top → bottom)
+      const imageElements = (slide.pageElements || [])
         .filter(el => el.image)
         .sort((a, b) => (a.transform?.translateY || 0) - (b.transform?.translateY || 0))
         .slice(0, 2);
 
-      for (let j = 0; j < Math.min(imageElements.length, slideImages.length); j++) {
-        const imgUrl = slideImages[j];
+      for (let j = 0; j < Math.min(imageElements.length, imagesToUse.length); j++) {
+        const imgUrl = imagesToUse[j];
         if (!imgUrl) continue;
+        const objectId = imageElements[j].objectId;
+
         try {
           await slides.presentations.batchUpdate({
             presentationId,
             requestBody: { requests: [{
               replaceImage: {
-                imageObjectId: imageElements[j].objectId,
+                imageObjectId: objectId,
                 url: imgUrl,
                 imageReplaceMethod: 'CENTER_CROP',
               },
             }] },
           });
+          console.log(`  Replaced image ${j} on slide ${slideId} (product ${i})`);
         } catch (imgErr) {
-          console.warn(`⚠️ Image replace failed on duplicated slide, trying placeholder...`);
-          try {
-            await slides.presentations.batchUpdate({
-              presentationId,
-              requestBody: { requests: [{
-                replaceImage: {
-                  imageObjectId: imageElements[j].objectId,
-                  url: PLACEHOLDER_IMAGE_URL,
-                  imageReplaceMethod: 'CENTER_CROP',
-                },
-              }] },
-            });
-          } catch (_) {
-            console.warn(`⚠️ Placeholder also failed, skipping`);
+          console.warn(`⚠️ Direct URL failed on slide ${slideId}: ${imgErr.message}`);
+          // Fallback: proxy through Google Drive
+          const proxied = await proxyImageToDrive(drive, imgUrl);
+          if (proxied) {
+            allTempFileIds.push(proxied.fileId);
+            try {
+              await slides.presentations.batchUpdate({
+                presentationId,
+                requestBody: { requests: [{
+                  replaceImage: { imageObjectId: objectId, url: proxied.url, imageReplaceMethod: 'CENTER_CROP' },
+                }] },
+              });
+              console.log(`  Replaced image ${j} on slide ${slideId} via Drive proxy`);
+            } catch (proxyErr) {
+              console.warn(`⚠️ Drive proxy also failed for slide ${slideId}: ${proxyErr.message}`);
+            }
           }
         }
       }
     }
   }
 
-  // Rename the presentation
-  const fileName = `G2B Media - ${products.length} Products Export`;
-  await drive.files.update({
+  // 6. Make the presentation publicly accessible
+  await drive.permissions.create({
     fileId: presentationId,
     supportsAllDrives: true,
-    requestBody: { name: fileName },
+    requestBody: { role: 'reader', type: 'anyone' },
   });
+
+  // 7. Delayed cleanup — give Google time to fully embed images before deleting source files
+  if (allTempFileIds.length > 0) {
+    console.log(`Scheduling cleanup of ${allTempFileIds.length} temp Drive files in 60 s...`);
+    setTimeout(() => {
+      cleanupDriveFiles(drive, allTempFileIds).catch(() => {});
+    }, 60000);
+  }
 
   const slideUrl = `https://docs.google.com/presentation/d/${presentationId}/edit`;
   const exportUrl = `https://docs.google.com/presentation/d/${presentationId}/export/pptx`;

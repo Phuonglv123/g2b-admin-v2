@@ -62,7 +62,7 @@ import { getProviders, findOrCreateProvider } from '@/lib/customerProvider'
 import { useAuth } from '@/contexts/AuthContext'
 import { ModernPDFUploader, ImageEditor } from '@/components/inventory'
 import { VietnamAddressSelector } from '@/components/location'
-import { convertAndUploadPdfImages } from '@/lib/convertApiService'
+import { extractAndUploadPDFImages } from '@/lib/pdfImageExtractor'
 import { supabase } from '@/lib/supabase'
 import { matchImagesByPagePosition, aiSearchProducts } from '@/lib/claudeService'
 import { exportProductToSlides, exportMultipleProductsToSlides, type SlideExportResult } from '@/lib/slidesExportService'
@@ -96,6 +96,26 @@ const statusStyles: Record<ProductStatus, string> = {
   0: 'bg-red-500/20 text-red-400',
   1: 'bg-green-500/20 text-green-400',
   2: 'bg-yellow-500/20 text-yellow-400',
+}
+
+// Safe image thumbnail component - uses React state instead of innerHTML
+const ProductThumbnail = ({ src, alt, className = '' }: { src: string; alt: string; className?: string }) => {
+  const [failed, setFailed] = useState(false)
+  if (failed) {
+    return (
+      <div className={`flex items-center justify-center bg-primary/10 ${className}`}>
+        <ImageIcon className="h-5 w-5 text-primary" />
+      </div>
+    )
+  }
+  return (
+    <img
+      src={src}
+      alt={alt}
+      className={`object-cover ${className}`}
+      onError={() => setFailed(true)}
+    />
+  )
 }
 
 const InventoryPage = () => {
@@ -550,7 +570,7 @@ const InventoryPage = () => {
       const updatedProviders = await getProviders()
       setProviders(updatedProviders)
 
-      // 2. Extract images from PDF using ConvertAPI
+      // 2. Extract images from PDF using pdf.js + upload to Supabase
       setImportProgress(p => ({ ...p, step: 'Extracting images from PDF...' }))
       let imageUrls: string[] = []
       if (file.type === 'application/pdf') {
@@ -558,9 +578,8 @@ const InventoryPage = () => {
           console.log('🖼️ Converting PDF to images...')
           // Use first product code for folder naming
           const firstProductCode = data.products[0]?.product_code || await generateProductCode(data.products[0]?.type || 'billboard')
-          const uploadResult = await convertAndUploadPdfImages(file, firstProductCode, 1) // Start from page 1 to get all images
-          imageUrls = uploadResult.imageUrls
-          console.log(`✅ Converted and uploaded ${imageUrls.length} images`)
+          imageUrls = await extractAndUploadPDFImages(file, firstProductCode, 1) // Start from page 1 to get all images
+          console.log(`✅ Extracted and uploaded ${imageUrls.length} images`)
         } catch (imgError) {
           console.error('❌ Error converting PDF images:', imgError)
           setAiError(`Note: Could not extract images from PDF. ${imgError instanceof Error ? imgError.message : ''}`)
@@ -1117,15 +1136,10 @@ const InventoryPage = () => {
                         {/* Product Image or Icon */}
                         {hasImages ? (
                           <div className="h-12 w-12 rounded-lg overflow-hidden bg-muted flex-shrink-0">
-                            <img
+                            <ProductThumbnail
                               src={product.images[0]}
                               alt={product.product_name}
-                              className="h-full w-full object-cover"
-                              onError={(e) => {
-                                // Fallback to icon if image fails to load
-                                e.currentTarget.style.display = 'none'
-                                e.currentTarget.parentElement!.innerHTML = `<div class="h-full w-full flex items-center justify-center bg-primary/10"><svg class="h-5 w-5 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg></div>`
-                              }}
+                              className="h-full w-full"
                             />
                           </div>
                         ) : (
@@ -1499,23 +1513,10 @@ const InventoryPage = () => {
                         className="relative aspect-video rounded-lg overflow-hidden bg-muted group cursor-pointer"
                         onClick={() => window.open(imageUrl, '_blank')}
                       >
-                        <img
+                        <ProductThumbnail
                           src={imageUrl}
                           alt={`${selectedProduct.product_name} - Image ${index + 1}`}
-                          className="h-full w-full object-cover transition-transform group-hover:scale-105"
-                          onError={(e) => {
-                            e.currentTarget.src = ''
-                            e.currentTarget.parentElement!.innerHTML = `
-                              <div class="h-full w-full flex flex-col items-center justify-center text-muted-foreground">
-                                <svg class="h-8 w-8 mb-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                  <rect x="3" y="3" width="18" height="18" rx="2"/>
-                                  <circle cx="8.5" cy="8.5" r="1.5"/>
-                                  <path d="m21 15-5-5L5 21"/>
-                                </svg>
-                                <span class="text-xs">Failed to load image</span>
-                              </div>
-                            `
-                          }}
+                          className="h-full w-full transition-transform group-hover:scale-105"
                         />
                         <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
                           <Eye className="h-6 w-6 text-white opacity-0 group-hover:opacity-100 transition-opacity" />

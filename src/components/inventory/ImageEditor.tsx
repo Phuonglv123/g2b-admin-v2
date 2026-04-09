@@ -1,5 +1,5 @@
-import { useState, useRef } from 'react'
-import { Plus, Upload, Trash2, GripVertical, Image as ImageIcon, Loader2 } from 'lucide-react'
+import { useState, useRef, useCallback } from 'react'
+import { Plus, Upload, Trash2, GripVertical, Image as ImageIcon, Loader2, AlertTriangle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -26,25 +26,40 @@ export const ImageEditor: React.FC<ImageEditorProps> = ({
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null)
   const [urlInput, setUrlInput] = useState('')
+  const [brokenImages, setBrokenImages] = useState<Set<string>>(new Set())
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Track broken images
+  const handleImageError = useCallback((url: string) => {
+    setBrokenImages(prev => new Set(prev).add(url))
+  }, [])
+
+  // Remove all broken images at once
+  const handleRemoveBrokenImages = () => {
+    const validImages = images.filter(url => !brokenImages.has(url))
+    setBrokenImages(new Set())
+    onChange(validImages)
+  }
 
   // Upload image to Supabase Storage
   const uploadImage = async (file: File): Promise<string | null> => {
     try {
       const fileExt = file.name.split('.').pop()?.toLowerCase() || 'jpg'
       const timestamp = Date.now()
-      const fileName = `${productCode}/${timestamp}.${fileExt}`
+      const randomSuffix = Math.random().toString(36).substring(2, 8)
+      const fileName = `${productCode}/${timestamp}_${randomSuffix}.${fileExt}`
 
       const { data, error } = await supabase.storage
         .from('g2b')
         .upload(`products/${fileName}`, file, {
           cacheControl: '3600',
-          upsert: false,
+          upsert: true,
         })
 
       if (error) {
         console.error('Upload error:', error)
-        throw error
+        setUploadError(`Upload failed: ${error.message}`)
+        return null
       }
 
       // Get public URL
@@ -54,7 +69,9 @@ export const ImageEditor: React.FC<ImageEditorProps> = ({
 
       return urlData.publicUrl
     } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
       console.error('Error uploading image:', error)
+      setUploadError(`Upload failed: ${message}`)
       return null
     }
   }
@@ -96,6 +113,11 @@ export const ImageEditor: React.FC<ImageEditorProps> = ({
 
     if (uploadedUrls.length > 0) {
       onChange([...images, ...uploadedUrls])
+    }
+
+    if (uploadedUrls.length < filesToUpload.length && !uploadError) {
+      const failedCount = filesToUpload.length - uploadedUrls.length
+      setUploadError(`${failedCount} image(s) failed to upload. Check your connection or storage settings.`)
     }
 
     setIsUploading(false)
@@ -173,6 +195,19 @@ export const ImageEditor: React.FC<ImageEditorProps> = ({
           <ImageIcon className="h-4 w-4" />
           Product Images ({images.length}/{maxImages})
         </Label>
+        {/* Show broken images warning and cleanup button */}
+        {brokenImages.size > 0 && (
+          <Button
+            type="button"
+            variant="destructive"
+            size="sm"
+            onClick={handleRemoveBrokenImages}
+            className="h-7 text-xs gap-1"
+          >
+            <AlertTriangle className="h-3 w-3" />
+            Remove {brokenImages.size} broken image(s)
+          </Button>
+        )}
       </div>
 
       {/* Image Grid */}
@@ -192,14 +227,19 @@ export const ImageEditor: React.FC<ImageEditorProps> = ({
               `}
             >
               {/* Image */}
-              <img
-                src={url}
-                alt={`Product image ${index + 1}`}
-                className="w-full h-full object-cover"
-                onError={(e) => {
-                  (e.target as HTMLImageElement).src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect fill="%23374151" width="100" height="100"/><text fill="%239CA3AF" x="50" y="55" text-anchor="middle" font-size="12">Error</text></svg>'
-                }}
-              />
+              {brokenImages.has(url) ? (
+                <div className="w-full h-full flex flex-col items-center justify-center bg-red-500/10 text-red-400">
+                  <AlertTriangle className="h-5 w-5 mb-1" />
+                  <span className="text-[10px]">Broken</span>
+                </div>
+              ) : (
+                <img
+                  src={url}
+                  alt={`Product image ${index + 1}`}
+                  className="w-full h-full object-cover"
+                  onError={() => handleImageError(url)}
+                />
+              )}
 
               {/* Primary Badge */}
               {index === 0 && (

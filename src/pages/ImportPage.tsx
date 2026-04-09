@@ -33,7 +33,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { extractProductFromFile, type ExtractedPDFData, type ExtractedProductData } from '@/lib/claudeService'
-import { convertPdfToImages, type ConvertedImage } from '@/lib/convertApiService'
+import { extractImagesFromPDF, uploadImagesToStorage } from '@/lib/pdfImageExtractor'
 import { createProduct } from '@/lib/productProvider'
 import { findOrCreateProvider } from '@/lib/customerProvider'
 import { useAuth } from '@/contexts/AuthContext'
@@ -126,12 +126,12 @@ export default function ImportPage() {
   // Convert extracted products to editable products with images
   const convertToEditableProducts = useCallback((
     products: ExtractedProductData[], 
-    extractedImages?: ConvertedImage[]
+    uploadedImageUrls?: string[]
   ): EditableProduct[] => {
     // Pattern: Page 1 = Provider info (already skipped), remaining pages are for products
     // We distribute images evenly among products
     const productCount = products.length
-    const imageCount = extractedImages?.length || 0
+    const imageCount = uploadedImageUrls?.length || 0
     
     // Calculate images per product
     const imagesPerProduct = productCount > 0 ? Math.floor(imageCount / productCount) : 0
@@ -142,11 +142,11 @@ export default function ImportPage() {
       // Assign images to this product
       const startIdx = index * imagesPerProduct
       const endIdx = startIdx + imagesPerProduct
-      const productImages = extractedImages?.slice(startIdx, endIdx) || []
+      const productImageUrls = uploadedImageUrls?.slice(startIdx, endIdx) || []
       
-      const images: ProductImage[] = productImages.map((img, imgIndex) => ({
+      const images: ProductImage[] = productImageUrls.map((url, imgIndex) => ({
         id: `extracted-${index}-${imgIndex}-${Date.now()}`,
-        url: img.url,
+        url,
         isNew: false,
       }))
 
@@ -160,21 +160,28 @@ export default function ImportPage() {
     })
   }, [])
 
-  // Extract images from PDF using ConvertAPI
-  const extractImagesFromPdf = useCallback(async (file: File): Promise<ConvertedImage[]> => {
+  // Extract images from PDF using pdf.js and upload to Supabase Storage
+  const extractAndUploadPdfImages = useCallback(async (file: File, productCode: string): Promise<string[]> => {
     if (file.type !== 'application/pdf') {
       console.log('📷 File is not PDF, skipping image extraction')
       return []
     }
 
     try {
-      console.log('📷 Extracting images from PDF using ConvertAPI...')
+      console.log('📷 Extracting images from PDF using pdf.js...')
       // Start from page 2 to skip the first page (provider info)
-      const images = await convertPdfToImages(file, 2)
+      const images = await extractImagesFromPDF(file, 2)
       console.log(`📷 Extracted ${images.length} product images from PDF (skipped page 1 - provider info)`)
-      return images
+      
+      if (images.length === 0) return []
+      
+      // Upload to Supabase Storage
+      console.log('📤 Uploading images to Supabase Storage...')
+      const urls = await uploadImagesToStorage(images, productCode)
+      console.log(`✅ Uploaded ${urls.length} images to Supabase Storage`)
+      return urls
     } catch (error) {
-      console.error('📷 Failed to extract images from PDF:', error)
+      console.error('📷 Failed to extract/upload images from PDF:', error)
       return []
     }
   }, [])
@@ -214,11 +221,12 @@ export default function ImportPage() {
           progress: 50,
         } : null)
 
-        // Step 3: Extract images from PDF using ConvertAPI
-        const extractedImages = await extractImagesFromPdf(file)
+        // Step 3: Extract images from PDF using pdf.js + upload to Supabase
+        const firstProductCode = result.data.products[0]?.product_code || `PRD-${Date.now()}`
+        const uploadedImageUrls = await extractAndUploadPdfImages(file, firstProductCode)
 
-        // Step 4: Convert products with images
-        const editableProducts = convertToEditableProducts(result.data.products, extractedImages)
+        // Step 4: Convert products with images (now using Supabase URLs)
+        const editableProducts = convertToEditableProducts(result.data.products, uploadedImageUrls)
         
         setScannedFile(prev => prev ? {
           ...prev,

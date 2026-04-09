@@ -1,8 +1,11 @@
 import * as pdfjsLib from 'pdfjs-dist'
 import { supabase } from './supabase'
 
-// Set worker source - using CDN for compatibility
-pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`
+// Use local worker from node_modules — Vite resolves this via import.meta.url
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+  'pdfjs-dist/build/pdf.worker.min.mjs',
+  import.meta.url,
+).toString()
 
 export interface ExtractedImage {
   pageNumber: number
@@ -45,22 +48,15 @@ export async function extractImagesFromPDF(
       
       // Create canvas
       const canvas = document.createElement('canvas')
-      const context = canvas.getContext('2d')
-      
-      if (!context) {
-        console.error(`Failed to get canvas context for page ${pageNum}`)
-        continue
-      }
       
       canvas.width = viewport.width
       canvas.height = viewport.height
       
-      // Render page to canvas
+      // Render page to canvas (pdfjs v5: use `canvas` param)
       await page.render({
-        canvasContext: context,
-        viewport: viewport,
-        canvas: canvas,
-      } as never).promise
+        canvas,
+        viewport,
+      }).promise
       
       // Convert to data URL and blob
       const dataUrl = canvas.toDataURL('image/jpeg', 0.9)
