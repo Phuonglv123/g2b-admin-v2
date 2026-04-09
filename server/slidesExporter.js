@@ -125,18 +125,29 @@ async function cleanupDriveFiles(drive, fileIds) {
  */
 async function prepareProductImages(drive, product, maxImages = 2) {
   const validImages = (product.images || [])
-    .filter(url => url && typeof url === 'string' && /^https?:\/\/.+/.test(url.trim()))
-    .slice(0, maxImages);
+    .filter(url => url && typeof url === 'string' && /^https?:\/\/.+/.test(url.trim()));
 
   if (validImages.length === 0) {
     console.log(`  No valid images for product: ${product.product_name}`);
     return { primaryUrls: [], fallbackUrls: [], tempFileIds: [] };
   }
 
-  // Try original URLs first — they're publicly accessible and Google can often reach them directly.
-  // Drive proxy is attempted only as fallback (inside replaceImage retry loop).
-  console.log(`  Prepared ${validImages.length} image URL(s) for product: ${product.product_name}`);
-  return { primaryUrls: validImages, fallbackUrls: [], tempFileIds: [] };
+  // Pick images from the END of the array:
+  //   - Big image (top placeholder)  = second-to-last
+  //   - Small image (bottom placeholder) = last
+  let selected;
+  if (validImages.length >= 2) {
+    selected = [
+      validImages[validImages.length - 2],  // second-to-last → big image
+      validImages[validImages.length - 1],  // last → small image
+    ];
+  } else {
+    // Only 1 image: use it for both slots
+    selected = [validImages[0], validImages[0]];
+  }
+
+  console.log(`  Prepared ${selected.length} image URL(s) for product: ${product.product_name} (from ${validImages.length} total)`);
+  return { primaryUrls: selected, fallbackUrls: [], tempFileIds: [] };
 }
 
 /**
