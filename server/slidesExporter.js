@@ -162,11 +162,73 @@ function extractNumber(str) {
   return match ? match[0] : '0';
 }
 
+/**
+ * Translate common Vietnamese terms to English for PPT export
+ */
+function translateToEnglish(text) {
+  if (!text) return '';
+  let result = String(text);
+
+  const replacements = [
+    // Time periods
+    [/(\d+)\s*tháng/gi, '$1 month'],
+    [/(\d+)\s*năm/gi, '$1 year'],
+    [/(\d+)\s*tuần/gi, '$1 week'],
+    [/(\d+)\s*ngày/gi, '$1 day'],
+    // Administrative units
+    [/\bQuận\b/g, 'Dist.'],
+    [/\bPhường\b/g, 'Ward'],
+    [/\bThành phố\b/g, 'City'],
+    [/\bTỉnh\b/g, 'Province'],
+    [/\bHuyện\b/g, 'District'],
+    [/\bXã\b/g, 'Commune'],
+    [/\bThị xã\b/g, 'Town'],
+    [/\bĐường\b/g, 'St.'],
+    // Directions & landmarks
+    [/\bHướng nhìn\b/gi, 'Facing'],
+    [/\bNgã tư\b/gi, 'intersection'],
+    [/\bNgã ba\b/gi, 'T-junction'],
+    [/\bVòng xoay\b/gi, 'roundabout'],
+    [/\bCầu vượt\b/gi, 'overpass'],
+    [/\bTrung tâm\b/gi, 'center'],
+    [/\bGần\b/gi, 'Near'],
+    [/\bgần\b/g, 'near'],
+    // Advertising/billboard terms
+    [/\bBảng quảng cáo\b/gi, 'Billboard'],
+    [/\bMàn hình\b/gi, 'Screen'],
+    [/\bVị trí\b/gi, 'Location'],
+    [/\bKhu vực\b/gi, 'Area'],
+    // Description terms
+    [/\bnằm\b/gi, 'located'],
+    [/\btuyến đường\b/gi, 'route'],
+    [/\bhuyết mạch\b/gi, 'arterial road'],
+    [/\bcơ sở\b/gi, 'facilities'],
+    [/\bkhách quốc tế\b/gi, 'international tourists'],
+    [/\bsân bay\b/gi, 'airport'],
+    [/\btập trung\b/gi, 'concentrated'],
+    [/\blưu trú\b/gi, 'accommodation'],
+    [/\bkhúc đường cong\b/gi, 'curved road section'],
+    [/\btrên đường\b/gi, 'on'],
+    // Traffic terms
+    [/lượt\/ngày/gi, 'views/day'],
+    [/xe\/ngày/gi, 'vehicles/day'],
+    [/người\/ngày/gi, 'pedestrians/day'],
+  ];
+
+  for (const [pattern, replacement] of replacements) {
+    result = result.replace(pattern, replacement);
+  }
+
+  // Clean up multiple spaces
+  result = result.replace(/\s{2,}/g, ' ').trim();
+  return result;
+}
+
 function buildPlaceholderMap(product) {
   const attrs = product.attributes || {};
   
-  // Truncate product name to max 14 chars (including spaces)
-  const productName = (product.product_name || '').slice(0, 14);
+  // Truncate product name to max 40 chars (including spaces)
+  const productName = (product.product_name || '').slice(0, 40);
 
   // Format dimension
   const dimension = (attrs.width && attrs.height) 
@@ -189,9 +251,12 @@ function buildPlaceholderMap(product) {
     ? `${currency} ${Number(product.cost).toLocaleString('en-US')}` 
     : '';
   
+  // Translate booking_duration to English
+  const bookingDurationEn = translateToEnglish(product.booking_duration || '1 month');
+
   // Format cost with period
   const costWithPeriod = costFormatted 
-    ? `${costFormatted} / ${product.booking_duration || '1 month'}` 
+    ? `${costFormatted} / ${bookingDurationEn}` 
     : '';
 
   // Format GPS
@@ -205,7 +270,7 @@ function buildPlaceholderMap(product) {
 
   // Format frequency with time
   const frequencyFull = attrs.frequency 
-    ? `${attrs.frequency} sports/day,\n${operaTime}` 
+    ? `${attrs.frequency} spots/day,\n${operaTime}` 
     : '';
 
   // Format type/format
@@ -224,26 +289,26 @@ function buildPlaceholderMap(product) {
     ? `Local tax: ${product.local_tax}% not included` 
     : '';
 
-  // Near by / landmark
-  const landmark = product.landmark || '';
+  // Near by / landmark (translated to English)
+  const landmark = translateToEnglish(product.landmark || '');
 
-  // Visibility from note
-  const visibility = attrs.note || '';
+  // Visibility from note (translated to English)
+  const visibility = translateToEnglish(attrs.note || '');
 
-  // Description - max 200 chars
-  const description = (product.description || '').slice(0, 200);
+  // Description - max 200 chars (translated to English)
+  const description = translateToEnglish((product.description || '').slice(0, 200));
 
-  // City province
-  const cityProvince = product.city_province || '';
+  // City province (translated to English)
+  const cityProvince = translateToEnglish(product.city_province || '');
 
   // Provider
   const providerName = product.provider_name || '';
 
-  // Full address
-  const address = product.location_address || '';
+  // Full address (translated to English)
+  const address = translateToEnglish(product.location_address || '');
 
-  // Booking duration
-  const bookingDuration = product.booking_duration || '';
+  // Booking duration (translated to English)
+  const bookingDuration = bookingDurationEn;
 
   // Spots per day - extract only number from frequency
   const spotsDay = extractNumber(attrs.frequency);
@@ -277,7 +342,7 @@ function buildPlaceholderMap(product) {
     // Single-brace format {key} — matching template in screenshot
     '{product_name}': productName,
     '{product_code}': product.product_code || '',
-    '{location_name}': (product.location_name || product.product_name || '').slice(0, 14),
+    '{location_name}': (product.location_name || product.product_name || '').slice(0, 40),
     '{location_address}': address,
     '{type}': formatLabel,
     '{attributes.width}': attrs.width ? `${attrs.width}m W` : '',
@@ -667,8 +732,33 @@ export async function exportMultipleProductsToSlides(products) {
     }
   }
 
-  // 5. Replace images per product
+  // 5. Replace images per product with proper detection + resize
   const allTempFileIds = [];
+
+  // Helper to calculate rendered size of an element
+  function getRenderedSize(el) {
+    const w = (el.size?.width?.magnitude || 0) * Math.abs(el.transform?.scaleX || 1);
+    const h = (el.size?.height?.magnitude || 0) * Math.abs(el.transform?.scaleY || 1);
+    return { width: w, height: h };
+  }
+
+  const EMU_PER_INCH = 914400;
+  const MIN_EMU = 2743200; // 3 inches in EMU
+  const SLIDE_WIDTH = 10 * EMU_PER_INCH;
+  const RIGHT_MARGIN = 0.4 * EMU_PER_INCH;
+
+  // Target sizes by position index (0 = top/big, 1 = bottom/small)
+  // Must match the single-product export resize targets
+  const TARGET_SIZES = [
+    { w: 4.2 * EMU_PER_INCH, h: 2.3 * EMU_PER_INCH, topOffset: 0.3 * EMU_PER_INCH },
+    { w: 2.2 * EMU_PER_INCH, h: 1.5 * EMU_PER_INCH, topOffset: 0 },
+  ];
+
+  // Fetch presentation once to get all element IDs before replacements
+  const preImagePres = await slides.presentations.get({ presentationId });
+  const preImageSlides = preImagePres.data.slides || [];
+
+  const allReplacedImages = []; // Track { slideId, objectId, positionIndex } for resize step
 
   for (let i = 0; i < products.length; i++) {
     const product = products[i];
@@ -681,19 +771,32 @@ export async function exportMultipleProductsToSlides(products) {
       ? primaryUrls
       : [PLACEHOLDER_IMAGE_URL, PLACEHOLDER_IMAGE_URL];
 
-    // Fetch current state so we get accurate element IDs (duplicates get new IDs)
-    const pres = await slides.presentations.get({ presentationId });
-    const allSlides = pres.data.slides || [];
-
     for (const slideId of slideIds) {
-      const slide = allSlides.find(s => s.objectId === slideId);
+      const slide = preImageSlides.find(s => s.objectId === slideId);
       if (!slide) continue;
 
-      // Find image elements sorted by vertical position (top → bottom)
-      const imageElements = (slide.pageElements || [])
-        .filter(el => el.image)
+      // Find large image elements on the right side of the slide
+      // (same detection logic as single-product export)
+      let imageElements = (slide.pageElements || [])
+        .filter(el => {
+          if (!el.image) return false;
+          const tx = el.transform?.translateX || 0;
+          const rendered = getRenderedSize(el);
+          return tx > 3500000 && rendered.width > MIN_EMU && rendered.height > MIN_EMU;
+        })
         .sort((a, b) => (a.transform?.translateY || 0) - (b.transform?.translateY || 0))
         .slice(0, 2);
+
+      // Fallback: if no large right-side images found, use any images
+      if (imageElements.length === 0) {
+        console.log(`  No large right-side images on slide ${slideId}, falling back to all images`);
+        imageElements = (slide.pageElements || [])
+          .filter(el => el.image)
+          .sort((a, b) => (a.transform?.translateY || 0) - (b.transform?.translateY || 0))
+          .slice(0, 2);
+      }
+
+      console.log(`  Found ${imageElements.length} image placeholders on slide ${slideId}`);
 
       for (let j = 0; j < Math.min(imageElements.length, imagesToUse.length); j++) {
         const imgUrl = imagesToUse[j];
@@ -711,6 +814,7 @@ export async function exportMultipleProductsToSlides(products) {
               },
             }] },
           });
+          allReplacedImages.push({ slideId, objectId, positionIndex: j });
           console.log(`  Replaced image ${j} on slide ${slideId} (product ${i})`);
         } catch (imgErr) {
           console.warn(`⚠️ Direct URL failed on slide ${slideId}: ${imgErr.message}`);
@@ -725,6 +829,7 @@ export async function exportMultipleProductsToSlides(products) {
                   replaceImage: { imageObjectId: objectId, url: proxied.url, imageReplaceMethod: 'CENTER_CROP' },
                 }] },
               });
+              allReplacedImages.push({ slideId, objectId, positionIndex: j });
               console.log(`  Replaced image ${j} on slide ${slideId} via Drive proxy`);
             } catch (proxyErr) {
               console.warn(`⚠️ Drive proxy also failed for slide ${slideId}: ${proxyErr.message}`);
@@ -732,6 +837,57 @@ export async function exportMultipleProductsToSlides(products) {
           }
         }
       }
+    }
+  }
+
+  // 5b. Resize/reposition all replaced images to exact target sizes
+  //     (same logic as single-product export step 5b)
+  if (allReplacedImages.length > 0) {
+    const updatedPres = await slides.presentations.get({ presentationId });
+    const resizeRequests = [];
+
+    for (const { slideId, objectId, positionIndex } of allReplacedImages) {
+      const target = TARGET_SIZES[positionIndex];
+      if (!target) continue;
+
+      const slide = (updatedPres.data.slides || []).find(s => s.objectId === slideId);
+      const el = (slide?.pageElements || []).find(e => e.objectId === objectId);
+      if (!el) continue;
+
+      const t = el.transform || {};
+      const sizeW = el.size?.width?.magnitude || 0;
+      const sizeH = el.size?.height?.magnitude || 0;
+      if (sizeW === 0 || sizeH === 0) continue;
+
+      const renderedH = sizeH * Math.abs(t.scaleY || 1);
+      const newSX = (target.w / sizeW) * Math.sign(t.scaleX || 1);
+      const newSY = (target.h / sizeH) * Math.sign(t.scaleY || 1);
+      const newTX = SLIDE_WIDTH - RIGHT_MARGIN - target.w;
+      const newTY = (t.translateY || 0) + (renderedH - target.h) / 2 + (target.topOffset || 0);
+
+      resizeRequests.push({
+        updatePageElementTransform: {
+          objectId,
+          applyMode: 'ABSOLUTE',
+          transform: {
+            scaleX: newSX,
+            scaleY: newSY,
+            translateX: newTX,
+            translateY: newTY,
+            shearX: t.shearX || 0,
+            shearY: t.shearY || 0,
+            unit: 'EMU',
+          },
+        },
+      });
+    }
+
+    if (resizeRequests.length > 0) {
+      await slides.presentations.batchUpdate({
+        presentationId,
+        requestBody: { requests: resizeRequests },
+      });
+      console.log(`Resized ${resizeRequests.length} images across all slides`);
     }
   }
 
