@@ -395,7 +395,7 @@ function buildPlaceholderMap(product) {
 
   // Format video duration
   const videoDuration = attrs.video_duration 
-    ? `${attrs.video_duration}s duration` 
+    ? `${attrs.video_duration || 0}s duration` 
     : '';
 
   // Format frequency with time
@@ -443,7 +443,7 @@ function buildPlaceholderMap(product) {
   // Spots per day - extract only number from frequency
   const spotsDay = extractNumber(attrs.frequency);
 
-  return {
+  const map = {
     // Double-brace format {{key}}
     '{{product_name}}': productName,
     '{{product_code}}': product.product_code || '',
@@ -459,7 +459,7 @@ function buildPlaceholderMap(product) {
     '{{dimension}}': dimension,
     '{{resolution}}': resolution,
     '{{gps}}': gps,
-    '{{video_duration}}': videoDuration,
+    '{{video_duration}}': videoDuration || "",
     '{{opera_time}}': operaTime,
     '{{cost}}': costFormatted,
     '{{cost_with_period}}': costWithPeriod,
@@ -468,6 +468,8 @@ function buildPlaceholderMap(product) {
     '{{city_province}}': cityProvince,
     '{{provider_name}}': providerName,
     '{{currency}}': currency,
+    '{{Near By}}': "",
+    '{{Booking minimum}}': bookingDuration,
     
     // Single-brace format {key} — matching template in screenshot
     '{product_name}': productName,
@@ -478,7 +480,7 @@ function buildPlaceholderMap(product) {
     '{attributes.width}': attrs.width ? `${attrs.width}m W` : '',
     '{attributes.height}': attrs.height ? `${attrs.height}mH` : '',
     '{attributes.ad_side}': String(attrs.add_side || 1),
-    '{attributes.video_duration}': attrs.video_duration ? `${attrs.video_duration}s duration,` : '',
+    '{attributes.video_duration}': attrs.video_duration ? `${attrs.video_duration || 0}s duration,` : '',
     '{attributes.pixel_width}': attrs.pixel_width ? String(attrs.pixel_width) : '',
     '{attributes.pixel_height}': attrs.pixel_height ? String(attrs.pixel_height) : '',
     '{attributes.quantity_of_ad}': String(ledCount),
@@ -496,6 +498,16 @@ function buildPlaceholderMap(product) {
     '{opera_time_to}': attrs.opera_time_to || '',
     '{attributes.note}': attrs.note || '',
   };
+
+  // Replace empty string values with a single space so placeholder tags
+  // are cleared from the slide instead of remaining visible.
+  for (const key of Object.keys(map)) {
+    if (map[key] === '' || map[key] === '0') {
+      map[key] = ' ';
+    }
+  }
+
+  return map;
 }
 
 /**
