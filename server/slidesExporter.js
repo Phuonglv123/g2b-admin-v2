@@ -7,11 +7,25 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Template Slide ID
-const TEMPLATE_SLIDE_ID = process.env.GOOGLE_SLIDES_TEMPLATE_ID || '1OljbL0izqkxUcg2VyDHIWbyMw9vK0qmLNBvNqwBxOSw';
+const TEMPLATE_SLIDE_ID =
+  process.env.GOOGLE_SLIDES_TEMPLATE_ID ||
+  "1XgYlc3oQdNfqnz0dar-J_JHLHINFUQfR56LfT4ys9J0";
 
 // Placeholder image for products without photos
 // A simple grey image with "No Image" text, hosted on a reliable public CDN
 const PLACEHOLDER_IMAGE_URL = process.env.PLACEHOLDER_IMAGE_URL || 'https://placehold.co/800x600/e2e8f0/64748b?text=No+Image+Available';
+
+// EMU constants (1 inch = 914400 EMU)
+const EMU_PER_INCH = 914400;
+
+// Target image positions/sizes on slide (in inches, converted to EMU)
+// Based on template layout: right ~47% of slide is the photo area
+// Image 1: Top-right hero — map/street view covering upper-right (slightly smaller)
+const IMAGE_TARGETS = [
+  { x: 5.0 * EMU_PER_INCH, y: 0.2 * EMU_PER_INCH, w: 4.2 * EMU_PER_INCH, h: 2.8 * EMU_PER_INCH },
+  // Image 2: Bottom-right feature — ~half the size of image 1
+  { x: 6.8 * EMU_PER_INCH, y: 3.2 * EMU_PER_INCH, w: 2.6 * EMU_PER_INCH, h: 1.6 * EMU_PER_INCH },
+];
 
 // Scopes for Google Slides & Drive
 const SCOPES = [
@@ -109,6 +123,122 @@ async function cleanupDriveFiles(drive, fileIds) {
       // Ignore cleanup errors
     }
   }
+}
+
+/**
+ * Insert product images into a slide using createImage API.
+ * Tries direct URL first; falls back to proxying through Google Drive.
+ * Returns array of temp Drive file IDs for cleanup.
+ */
+async function insertImagesOnSlide(slides, drive, presentationId, slideId, imageUrls) {
+  const tempFileIds = [];
+
+  for (let j = 0; j < Math.min(imageUrls.length, IMAGE_TARGETS.length); j++) {
+    const imgUrl = imageUrls[j];
+    if (!imgUrl) continue;
+    const target = IMAGE_TARGETS[j];
+
+    const createReq = {
+      createImage: {
+        url: imgUrl,
+        elementProperties: {
+          pageObjectId: slideId,
+          size: {
+            width: { magnitude: target.w, unit: 'EMU' },
+            height: { magnitude: target.h, unit: 'EMU' },
+          },
+          transform: {
+            scaleX: 1,
+            scaleY: 1,
+            translateX: target.x,
+            translateY: target.y,
+            shearX: 0,
+            shearY: 0,
+            unit: 'EMU',
+          },
+        },
+      },
+    };
+
+    try {
+      await slides.presentations.batchUpdate({
+        presentationId,
+        requestBody: { requests: [createReq] },
+      });
+      console.log(`  ✅ Created image ${j} on slide ${slideId}`);
+    } catch (err) {
+      console.warn(`  ⚠️ Direct createImage failed for image ${j} on slide ${slideId}: ${err.message}`);
+      // Fallback: proxy through Google Drive
+      const proxied = await proxyImageToDrive(drive, imgUrl);
+      if (proxied) {
+        tempFileIds.push(proxied.fileId);
+        createReq.createImage.url = proxied.url;
+        try {
+          await slides.presentations.batchUpdate({
+            presentationId,
+            requestBody: { requests: [createReq] },
+          });
+          console.log(`  ✅ Created image ${j} on slide ${slideId} via Drive proxy`);
+        } catch (proxyErr) {
+          console.warn(`  ⚠️ Drive proxy createImage also failed for slide ${slideId}: ${proxyErr.message}`);
+        }
+      }
+    }
+  }
+
+  // Adjust z-order: images should be ABOVE the background shape but BELOW text/icons.
+  // Strategy: send each image to back (behind background), then bring forward once
+  // so it sits just above the full-slide background shape.
+  try {
+    const pres = await slides.presentations.get({ presentationId });
+    const slide = (pres.data.slides || []).find(s => s.objectId === slideId);
+    if (slide) {
+      const allElements = slide.pageElements || [];
+      // Find our newly created large images
+      const newImages = allElements
+        .filter(el => el.image)
+        .filter(el => {
+          const rendered = {
+            w: (el.size?.width?.magnitude || 0) * Math.abs(el.transform?.scaleX || 1),
+            h: (el.size?.height?.magnitude || 0) * Math.abs(el.transform?.scaleY || 1),
+          };
+          // Our created images are large (> 2 inches)
+          return rendered.w > 2 * EMU_PER_INCH && rendered.h > 2 * EMU_PER_INCH;
+        });
+
+      if (newImages.length > 0) {
+        // Step 1: Send each image to the very back
+        for (const img of newImages) {
+          await slides.presentations.batchUpdate({
+            presentationId,
+            requestBody: { requests: [{
+              updatePageElementsZOrder: {
+                pageElementObjectIds: [img.objectId],
+                operation: 'SEND_TO_BACK',
+              },
+            }] },
+          });
+        }
+        // Step 2: Bring each image forward once (above background shape, below everything else)
+        for (const img of newImages) {
+          await slides.presentations.batchUpdate({
+            presentationId,
+            requestBody: { requests: [{
+              updatePageElementsZOrder: {
+                pageElementObjectIds: [img.objectId],
+                operation: 'BRING_FORWARD',
+              },
+            }] },
+          });
+        }
+        console.log(`  Z-ordered ${newImages.length} images: above background, below text on slide ${slideId}`);
+      }
+    }
+  } catch (zErr) {
+    console.warn(`  ⚠️ Z-order adjustment failed: ${zErr.message}`);
+  }
+
+  return tempFileIds;
 }
 
 /**
@@ -417,204 +547,19 @@ export async function exportProductToSlides(product) {
     console.log(`Applied ${requests.length} text replacements`);
   }
 
-  // 5. Handle image replacements — only use first 2 images
-  // Template has exactly 2 large photo areas on the right side, identified by inspection:
-  //   - Top-right hero: objectId "g3d25dc2f435_0_4" (5.49" x 3.56" at x=5.11", y=-0.67")
-  //   - Bottom-right feature: objectId "g3d25dc2f435_0_6" (5.37" x 3.79" at x=5.22", y=1.80")
-  // We use known objectIds as primary strategy, with dynamic fallback.
-  const KNOWN_IMAGE_IDS = ['g3d25dc2f435_0_4', 'g3d25dc2f435_0_6'];
-  
-  // Prepare image URLs — use original Supabase URLs directly (publicly accessible)
+  // 5. Handle image insertion — insert up to 2 images at predefined positions
   const { primaryUrls, tempFileIds } = await prepareProductImages(drive, product, 2);
-
-  // Use original images, or placeholder if none available
-  const imagesToUse = primaryUrls.length > 0 
-    ? primaryUrls 
+  const imagesToUse = primaryUrls.length > 0
+    ? primaryUrls
     : [PLACEHOLDER_IMAGE_URL, PLACEHOLDER_IMAGE_URL];
 
   {
-    const presentation = await slides.presentations.get({
-      presentationId: newPresentationId,
-    });
+    const presentation = await slides.presentations.get({ presentationId: newPresentationId });
     const slide = presentation.data.slides[0];
-    const pageElements = slide.pageElements || [];
+    const slideId = slide.objectId;
 
-    // Strategy 1: Find by known objectIds from the template
-    let imagePlaceholders = KNOWN_IMAGE_IDS
-      .map(id => pageElements.find(el => el.objectId === id && el.image))
-      .filter(Boolean);
-
-    // Strategy 2: If known IDs not found (e.g. after duplication), detect dynamically
-    if (imagePlaceholders.length < 2) {
-      console.log('Known image IDs not found, using dynamic detection...');
-      
-      // Calculate rendered size: size * |scale|
-      function getRenderedSize(el) {
-        const w = (el.size?.width?.magnitude || 0) * Math.abs(el.transform?.scaleX || 1);
-        const h = (el.size?.height?.magnitude || 0) * Math.abs(el.transform?.scaleY || 1);
-        return { width: w, height: h };
-      }
-
-      // Large photos: rendered > 3 inches in both dimensions, on right half
-      const MIN_EMU = 2743200; // 3 inches in EMU
-      imagePlaceholders = pageElements
-        .filter(el => {
-          if (!el.image) return false;
-          const tx = el.transform?.translateX || 0;
-          const rendered = getRenderedSize(el);
-          return tx > 3500000 && rendered.width > MIN_EMU && rendered.height > MIN_EMU;
-        })
-        .sort((a, b) => {
-          const ay = a.transform?.translateY || 0;
-          const by = b.transform?.translateY || 0;
-          return ay - by;
-        })
-        .slice(0, 2);
-    }
-
-    console.log(`Found ${imagePlaceholders.length} image placeholders for replacement`);
-    imagePlaceholders.forEach((el, i) => {
-      const t = el.transform || {};
-      console.log(`  Placeholder[${i}] id=${el.objectId} tX=${t.translateX} tY=${t.translateY}`);
-    });
-
-    const imageRequests = [];
-    for (let i = 0; i < Math.min(imagePlaceholders.length, imagesToUse.length); i++) {
-      const imageUrl = imagesToUse[i];
-      if (!imageUrl) continue;
-
-      imageRequests.push({
-        replaceImage: {
-          imageObjectId: imagePlaceholders[i].objectId,
-          url: imageUrl,
-          imageReplaceMethod: 'CENTER_CROP',
-        },
-      });
-    }
-
-    if (imageRequests.length > 0) {
-      const placeholderIds = imagePlaceholders.map(p => p.objectId);
-
-      // Try replacing images; handle failures gracefully
-      try {
-        await slides.presentations.batchUpdate({
-          presentationId: newPresentationId,
-          requestBody: { requests: imageRequests },
-        });
-        console.log(`Replaced ${imageRequests.length} images`);
-      } catch (imgErr) {
-        console.warn(`⚠️ Batch image replace failed: ${imgErr.message}`);
-        
-        // Retry one by one — if original URL fails, try proxying through Drive
-        for (let ri = 0; ri < imageRequests.length; ri++) {
-          const req = imageRequests[ri];
-          const objectId = req.replaceImage.imageObjectId;
-
-          try {
-            await slides.presentations.batchUpdate({
-              presentationId: newPresentationId,
-              requestBody: { requests: [req] },
-            });
-            console.log(`✅ Replaced image ${objectId}`);
-          } catch (singleErr) {
-            console.warn(`⚠️ Direct URL failed for ${objectId}: ${singleErr.message}`);
-            // Fallback: proxy through Google Drive
-            const proxied = await proxyImageToDrive(drive, req.replaceImage.url);
-            if (proxied) {
-              tempFileIds.push(proxied.fileId);
-              try {
-                await slides.presentations.batchUpdate({
-                  presentationId: newPresentationId,
-                  requestBody: { requests: [{
-                    replaceImage: { imageObjectId: objectId, url: proxied.url, imageReplaceMethod: 'CENTER_CROP' },
-                  }] },
-                });
-                console.log(`✅ Replaced image ${objectId} via Drive proxy`);
-              } catch (proxyErr) {
-                console.warn(`⚠️ Drive proxy also failed for ${objectId}: ${proxyErr.message}`);
-              }
-            }
-          }
-        }
-      }
-
-      // 5b. Re-fetch presentation to get updated element data after replaceImage
-      const updatedPres = await slides.presentations.get({ presentationId: newPresentationId });
-      const updatedPage = updatedPres.data.slides?.[0];
-      const updatedElements = updatedPage?.pageElements || [];
-
-      // Target sizes in EMU (1 inch = 914400 EMU)
-      // Slide width = 10" = 9144000 EMU, right margin = 0.2"
-      const EMU_PER_INCH = 914400;
-      const SLIDE_WIDTH = 10 * EMU_PER_INCH;
-      const RIGHT_MARGIN = 0.4 * EMU_PER_INCH; // 0.4" from right edge
-      const targetSizes = {
-        'g3d25dc2f435_0_4': { w: 4.2 * EMU_PER_INCH, h: 2.3 * EMU_PER_INCH, topOffset: 0.3 * EMU_PER_INCH },  // Image 1 + push down 0.3"
-        'g3d25dc2f435_0_6': { w: 2.2 * EMU_PER_INCH, h: 1.5 * EMU_PER_INCH, topOffset: 0 },  // Image 2
-      };
-      const resizeRequests = [];
-
-      for (const id of placeholderIds) {
-        const target = targetSizes[id];
-        if (!target) continue;
-
-        const el = updatedElements.find(e => e.objectId === id);
-        if (!el) { console.log(`  Element ${id} not found after replace`); continue; }
-
-        const t = el.transform || {};
-        const sizeW = el.size?.width?.magnitude || 0;
-        const sizeH = el.size?.height?.magnitude || 0;
-        const oldSX = t.scaleX || 1;
-        const oldSY = t.scaleY || 1;
-        const oldTX = t.translateX || 0;
-        const oldTY = t.translateY || 0;
-
-        // Current rendered dimensions (after replaceImage)
-        const renderedW = sizeW * Math.abs(oldSX);
-        const renderedH = sizeH * Math.abs(oldSY);
-
-        // Skip if size is 0 to avoid Infinity scaling
-        if (sizeW === 0 || sizeH === 0) {
-          console.log(`  Skipping resize for ${id}: element size is 0`);
-          continue;
-        }
-
-        // New scale to achieve exact target size
-        const newSX = (target.w / sizeW) * Math.sign(oldSX || 1);
-        const newSY = (target.h / sizeH) * Math.sign(oldSY || 1);
-
-        // Position: right-edge aligned with margin, vertically centered + optional top offset
-        const newTX = SLIDE_WIDTH - RIGHT_MARGIN - target.w; // flush to right margin
-        const deltaH = renderedH - target.h;
-        const newTY = oldTY + deltaH / 2 + (target.topOffset || 0);
-
-        console.log(`  Resize ${id}: ${(renderedW/EMU_PER_INCH).toFixed(2)}" x ${(renderedH/EMU_PER_INCH).toFixed(2)}" → ${(target.w/EMU_PER_INCH).toFixed(2)}" x ${(target.h/EMU_PER_INCH).toFixed(2)}"`);
-
-        resizeRequests.push({
-          updatePageElementTransform: {
-            objectId: id,
-            applyMode: 'ABSOLUTE',
-            transform: {
-              scaleX: newSX,
-              scaleY: newSY,
-              translateX: newTX,
-              translateY: newTY,
-              shearX: t.shearX || 0,
-              shearY: t.shearY || 0,
-              unit: 'EMU',
-            },
-          },
-        });
-      }
-
-      if (resizeRequests.length > 0) {
-        await slides.presentations.batchUpdate({
-          presentationId: newPresentationId,
-          requestBody: { requests: resizeRequests },
-        });
-        console.log(`Resized ${resizeRequests.length} images to exact target sizes`);
-      }
-    }
+    const insertTempIds = await insertImagesOnSlide(slides, drive, newPresentationId, slideId, imagesToUse);
+    tempFileIds.push(...insertTempIds);
   }
 
   // 6. Make the file accessible (anyone with link can view)
@@ -732,33 +677,8 @@ export async function exportMultipleProductsToSlides(products) {
     }
   }
 
-  // 5. Replace images per product with proper detection + resize
+  // 5. Insert images per product using createImage API
   const allTempFileIds = [];
-
-  // Helper to calculate rendered size of an element
-  function getRenderedSize(el) {
-    const w = (el.size?.width?.magnitude || 0) * Math.abs(el.transform?.scaleX || 1);
-    const h = (el.size?.height?.magnitude || 0) * Math.abs(el.transform?.scaleY || 1);
-    return { width: w, height: h };
-  }
-
-  const EMU_PER_INCH = 914400;
-  const MIN_EMU = 2743200; // 3 inches in EMU
-  const SLIDE_WIDTH = 10 * EMU_PER_INCH;
-  const RIGHT_MARGIN = 0.4 * EMU_PER_INCH;
-
-  // Target sizes by position index (0 = top/big, 1 = bottom/small)
-  // Must match the single-product export resize targets
-  const TARGET_SIZES = [
-    { w: 4.2 * EMU_PER_INCH, h: 2.3 * EMU_PER_INCH, topOffset: 0.3 * EMU_PER_INCH },
-    { w: 2.2 * EMU_PER_INCH, h: 1.5 * EMU_PER_INCH, topOffset: 0 },
-  ];
-
-  // Fetch presentation once to get all element IDs before replacements
-  const preImagePres = await slides.presentations.get({ presentationId });
-  const preImageSlides = preImagePres.data.slides || [];
-
-  const allReplacedImages = []; // Track { slideId, objectId, positionIndex } for resize step
 
   for (let i = 0; i < products.length; i++) {
     const product = products[i];
@@ -771,123 +691,11 @@ export async function exportMultipleProductsToSlides(products) {
       ? primaryUrls
       : [PLACEHOLDER_IMAGE_URL, PLACEHOLDER_IMAGE_URL];
 
-    for (const slideId of slideIds) {
-      const slide = preImageSlides.find(s => s.objectId === slideId);
-      if (!slide) continue;
-
-      // Find large image elements on the right side of the slide
-      // (same detection logic as single-product export)
-      let imageElements = (slide.pageElements || [])
-        .filter(el => {
-          if (!el.image) return false;
-          const tx = el.transform?.translateX || 0;
-          const rendered = getRenderedSize(el);
-          return tx > 3500000 && rendered.width > MIN_EMU && rendered.height > MIN_EMU;
-        })
-        .sort((a, b) => (a.transform?.translateY || 0) - (b.transform?.translateY || 0))
-        .slice(0, 2);
-
-      // Fallback: if no large right-side images found, use any images
-      if (imageElements.length === 0) {
-        console.log(`  No large right-side images on slide ${slideId}, falling back to all images`);
-        imageElements = (slide.pageElements || [])
-          .filter(el => el.image)
-          .sort((a, b) => (a.transform?.translateY || 0) - (b.transform?.translateY || 0))
-          .slice(0, 2);
-      }
-
-      console.log(`  Found ${imageElements.length} image placeholders on slide ${slideId}`);
-
-      for (let j = 0; j < Math.min(imageElements.length, imagesToUse.length); j++) {
-        const imgUrl = imagesToUse[j];
-        if (!imgUrl) continue;
-        const objectId = imageElements[j].objectId;
-
-        try {
-          await slides.presentations.batchUpdate({
-            presentationId,
-            requestBody: { requests: [{
-              replaceImage: {
-                imageObjectId: objectId,
-                url: imgUrl,
-                imageReplaceMethod: 'CENTER_CROP',
-              },
-            }] },
-          });
-          allReplacedImages.push({ slideId, objectId, positionIndex: j });
-          console.log(`  Replaced image ${j} on slide ${slideId} (product ${i})`);
-        } catch (imgErr) {
-          console.warn(`⚠️ Direct URL failed on slide ${slideId}: ${imgErr.message}`);
-          // Fallback: proxy through Google Drive
-          const proxied = await proxyImageToDrive(drive, imgUrl);
-          if (proxied) {
-            allTempFileIds.push(proxied.fileId);
-            try {
-              await slides.presentations.batchUpdate({
-                presentationId,
-                requestBody: { requests: [{
-                  replaceImage: { imageObjectId: objectId, url: proxied.url, imageReplaceMethod: 'CENTER_CROP' },
-                }] },
-              });
-              allReplacedImages.push({ slideId, objectId, positionIndex: j });
-              console.log(`  Replaced image ${j} on slide ${slideId} via Drive proxy`);
-            } catch (proxyErr) {
-              console.warn(`⚠️ Drive proxy also failed for slide ${slideId}: ${proxyErr.message}`);
-            }
-          }
-        }
-      }
-    }
-  }
-
-  // 5b. Resize/reposition all replaced images to exact target sizes
-  //     (same logic as single-product export step 5b)
-  if (allReplacedImages.length > 0) {
-    const updatedPres = await slides.presentations.get({ presentationId });
-    const resizeRequests = [];
-
-    for (const { slideId, objectId, positionIndex } of allReplacedImages) {
-      const target = TARGET_SIZES[positionIndex];
-      if (!target) continue;
-
-      const slide = (updatedPres.data.slides || []).find(s => s.objectId === slideId);
-      const el = (slide?.pageElements || []).find(e => e.objectId === objectId);
-      if (!el) continue;
-
-      const t = el.transform || {};
-      const sizeW = el.size?.width?.magnitude || 0;
-      const sizeH = el.size?.height?.magnitude || 0;
-      if (sizeW === 0 || sizeH === 0) continue;
-
-      const renderedH = sizeH * Math.abs(t.scaleY || 1);
-      const newSX = (target.w / sizeW) * Math.sign(t.scaleX || 1);
-      const newSY = (target.h / sizeH) * Math.sign(t.scaleY || 1);
-      const newTX = SLIDE_WIDTH - RIGHT_MARGIN - target.w;
-      const newTY = (t.translateY || 0) + (renderedH - target.h) / 2 + (target.topOffset || 0);
-
-      resizeRequests.push({
-        updatePageElementTransform: {
-          objectId,
-          applyMode: 'ABSOLUTE',
-          transform: {
-            scaleX: newSX,
-            scaleY: newSY,
-            translateX: newTX,
-            translateY: newTY,
-            shearX: t.shearX || 0,
-            shearY: t.shearY || 0,
-            unit: 'EMU',
-          },
-        },
-      });
-    }
-
-    if (resizeRequests.length > 0) {
-      await slides.presentations.batchUpdate({
-        presentationId,
-        requestBody: { requests: resizeRequests },
-      });
-      console.log(`Resized ${resizeRequests.length} images across all slides`);
+    // Insert images on the first slide of this product's slide set
+    const slideId = slideIds[0];
+    if (slideId) {
+      const insertTempIds = await insertImagesOnSlide(slides, drive, presentationId, slideId, imagesToUse);
+      allTempFileIds.push(...insertTempIds);
     }
   }
 
