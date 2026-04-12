@@ -61,7 +61,7 @@ Hãy phân tích kỹ toàn bộ nội dung và trích xuất chính xác từng
 |---|---|---|
 | Site Name / Tên vị trí | product_name | TỐI ĐA 40 KÝ TỰ |
 | Exact Location / Địa chỉ chi tiết | location.address + street components | Tách: street_number, street_name, ward, city_province |
-| Google Maps Pin | location.gps_coordinates | Format: "lat,lng" |
+| Google Maps Pin | location.gps_coordinates | Giữ nguyên text GPS từ PDF (Plus Code, lat/lng, địa chỉ...) |
 | Location Highlights / Điểm sáng vị trí | location.landmark | Hướng nhìn, gần ngã tư, trung tâm mua sắm, Unobstructed view... |
 | Mã vị trí / Location Code | product_code | Giữ nguyên mã gốc nếu có |
 
@@ -138,7 +138,7 @@ Hãy phân tích kỹ toàn bộ nội dung và trích xuất chính xác từng
         "ward": "",
         "city_province": "",
         "landmark": "Hướng nhìn / Điểm sáng vị trí (Location Highlights)",
-        "gps_coordinates": "lat,lng",
+        "gps_coordinates": "Giữ nguyên text GPS từ PDF",
         "currency": "VND",
         "local_tax": null
       },
@@ -181,7 +181,7 @@ Hãy phân tích kỹ toàn bộ nội dung và trích xuất chính xác từng
 7. Không tìm thấy → giá trị mặc định
 8. type: billboard (bảng tĩnh) | digital (màn hình digital) | led (LED) | transit (phương tiện di động) | poster | banner | other
 9. Địa chỉ: TÁCH rõ street_number, street_name, ward, city_province
-10. GPS: format "lat,lng"
+10. GPS: Giữ nguyên TOÀN BỘ text GPS từ PDF (bao gồm Plus Code, địa chỉ, tọa độ - KHÔNG cắt bớt)
 11. detected_items: Liệt kê các mục/dịch vụ đọc được
 12. product_code: Giữ nguyên mã từ PDF nếu có; nếu không có thì để trống
 13. ⚠️ NHẮC LẠI: OTC/VAC/OTS/traffic/lưu lượng/impressions → field "traffic", KHÔNG PHẢI "cost"

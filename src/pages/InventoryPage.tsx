@@ -706,8 +706,8 @@ const InventoryPage = () => {
         longitude = lng
         console.log(`✅ Using AI-provided GPS: ${lat}, ${lng}`)
       } else {
-        console.warn(`⚠️ Invalid GPS from AI: ${gpsCoordinates}`)
-        gpsCoordinates = undefined
+        console.warn(`⚠️ GPS not in lat,lng format, preserving raw text: ${gpsCoordinates}`)
+        // Keep raw GPS text (Plus Code, address, etc.) — don't clear it
       }
     }
 
@@ -727,7 +727,10 @@ const InventoryPage = () => {
           if (geocodeResult && isValidVietnamCoordinates(geocodeResult.latitude, geocodeResult.longitude)) {
             latitude = geocodeResult.latitude
             longitude = geocodeResult.longitude
-            gpsCoordinates = formatGPSCoordinates(latitude, longitude)
+            // Only set gpsCoordinates from geocoding if we don't already have raw GPS text
+            if (!gpsCoordinates) {
+              gpsCoordinates = formatGPSCoordinates(latitude, longitude)
+            }
             console.log(`✅ Geocoded successfully (${geocodeResult.provider}): ${latitude}, ${longitude}`)
           } else {
             console.warn(`⚠️ Geocoding returned no valid result for: ${fullAddress}`)

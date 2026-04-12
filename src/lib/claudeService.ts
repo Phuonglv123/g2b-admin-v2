@@ -564,8 +564,8 @@ export async function convertToProductParamsWithGeocoding(
       longitude = lng
       console.log(`✅ Using provided GPS: ${lat}, ${lng}`)
     } else {
-      console.warn(`⚠️ Invalid GPS coordinates provided: ${gps_coordinates}`)
-      gps_coordinates = undefined
+      console.warn(`⚠️ GPS not in lat,lng format, preserving raw text: ${gps_coordinates}`)
+      // Keep raw GPS text (Plus Code, address, etc.) — don't clear it
     }
   }
 
@@ -586,7 +586,10 @@ export async function convertToProductParamsWithGeocoding(
         if (geocodeResult && isValidVietnamCoordinates(geocodeResult.latitude, geocodeResult.longitude)) {
           latitude = geocodeResult.latitude
           longitude = geocodeResult.longitude
-          gps_coordinates = formatGPSCoordinates(latitude, longitude)
+          // Only set gps_coordinates from geocoding if we don't already have raw GPS text
+          if (!gps_coordinates) {
+            gps_coordinates = formatGPSCoordinates(latitude, longitude)
+          }
           console.log(`✅ Geocoded successfully (${geocodeResult.provider}): ${latitude}, ${longitude}`)
         }
       } catch (error) {

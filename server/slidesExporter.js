@@ -381,8 +381,8 @@ function buildPlaceholderMap(product) {
     ? `${currency} ${Number(product.cost).toLocaleString('en-US')}` 
     : '';
   
-  // Translate booking_duration to English
-  const bookingDurationEn = translateToEnglish(product.booking_duration || '1 month');
+  // Translate booking_duration to English (use actual data, no hardcoded default)
+  const bookingDurationEn = translateToEnglish(product.booking_duration || '');
 
   // Format cost with period
   const costWithPeriod = costFormatted 
@@ -480,10 +480,11 @@ function buildPlaceholderMap(product) {
     '{attributes.width}': attrs.width ? `${attrs.width}m W` : '',
     '{attributes.height}': attrs.height ? `${attrs.height}mH` : '',
     '{attributes.ad_side}': String(attrs.add_side || 1),
-    '{attributes.video_duration}': attrs.video_duration ? `${attrs.video_duration || 0}s duration,` : '',
+    '{attributes.video_duration}': attrs.video_duration ? String(attrs.video_duration) : '',
     '{attributes.pixel_width}': attrs.pixel_width ? String(attrs.pixel_width) : '',
     '{attributes.pixel_height}': attrs.pixel_height ? String(attrs.pixel_height) : '',
     '{attributes.quantity_of_ad}': String(ledCount),
+    '{quantity of ad face}': String(ledCount),
     '{frequency}': spotsDay,
     '{traffic}': traffic,
     '{cost}': costFormatted,
