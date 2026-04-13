@@ -2,6 +2,7 @@ import { google } from 'googleapis';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { Readable } from 'stream';
+import sharp from 'sharp';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -17,6 +18,9 @@ const PLACEHOLDER_IMAGE_URL = process.env.PLACEHOLDER_IMAGE_URL || 'https://plac
 
 // EMU constants (1 inch = 914400 EMU)
 const EMU_PER_INCH = 914400;
+
+// Rounded corner radius in pixels (adjust to taste)
+const ROUNDED_CORNER_RADIUS = 40;
 
 // Target image positions/sizes on slide (in inches, converted to EMU)
 // Based on template layout: right ~47% of slide is the photo area
@@ -46,11 +50,33 @@ async function getAuthClient() {
 }
 
 /**
+ * Apply rounded corners to an image buffer using sharp.
+ * Creates an SVG rounded-rectangle mask and composites it to produce PNG with transparent corners.
+ */
+async function applyRoundedCorners(inputBuffer, radius = ROUNDED_CORNER_RADIUS) {
+  const metadata = await sharp(inputBuffer).metadata();
+  const width = metadata.width;
+  const height = metadata.height;
+
+  const mask = Buffer.from(
+    `<svg width="${width}" height="${height}">
+      <rect x="0" y="0" width="${width}" height="${height}" rx="${radius}" ry="${radius}" fill="white"/>
+    </svg>`
+  );
+
+  return sharp(inputBuffer)
+    .ensureAlpha()
+    .composite([{ input: mask, blend: 'dest-in' }])
+    .png()
+    .toBuffer();
+}
+
+/**
  * Upload an image from a URL to Google Drive so Google Slides can access it.
  * Returns a publicly accessible Google Drive content URL.
  * This solves the problem where self-hosted Supabase URLs are not reachable by Google servers.
  */
-async function proxyImageToDrive(drive, imageUrl) {
+async function proxyImageToDrive(drive, imageUrl, { roundCorners = true } = {}) {
   try {
     // Download image from the original URL
     const response = await fetch(imageUrl, { 
@@ -63,21 +89,35 @@ async function proxyImageToDrive(drive, imageUrl) {
     }
 
     const contentType = response.headers.get('content-type') || 'image/jpeg';
-    const buffer = Buffer.from(await response.arrayBuffer());
+    let buffer = Buffer.from(await response.arrayBuffer());
     
     if (buffer.length < 100) {
       console.warn(`⚠️ Image too small (${buffer.length} bytes), likely broken: ${imageUrl}`);
       return null;
     }
 
+    // Apply rounded corners
+    if (roundCorners) {
+      try {
+        buffer = await applyRoundedCorners(buffer);
+        console.log(`  🔲→🔳 Applied rounded corners to image (${(buffer.length / 1024).toFixed(1)} KB)`);
+      } catch (rcErr) {
+        console.warn(`  ⚠️ Rounded corners failed, using original: ${rcErr.message}`);
+      }
+    }
+
+    // After rounding, image is always PNG
+    const uploadMimeType = roundCorners ? 'image/png' : contentType;
+    const ext = roundCorners ? 'png' : 'jpg';
+
     // Upload to Google Drive
     const fileMetadata = {
-      name: `g2b-export-${Date.now()}-${Math.random().toString(36).substring(2, 6)}.jpg`,
-      mimeType: contentType,
+      name: `g2b-export-${Date.now()}-${Math.random().toString(36).substring(2, 6)}.${ext}`,
+      mimeType: uploadMimeType,
     };
 
     const media = {
-      mimeType: contentType,
+      mimeType: uploadMimeType,
       body: Readable.from(buffer),
     };
 
@@ -138,9 +178,14 @@ async function insertImagesOnSlide(slides, drive, presentationId, slideId, image
     if (!imgUrl) continue;
     const target = IMAGE_TARGETS[j];
 
+    // Always proxy through Drive to apply rounded corners
+    const proxied = await proxyImageToDrive(drive, imgUrl);
+    const finalUrl = proxied ? proxied.url : imgUrl;
+    if (proxied) tempFileIds.push(proxied.fileId);
+
     const createReq = {
       createImage: {
-        url: imgUrl,
+        url: finalUrl,
         elementProperties: {
           pageObjectId: slideId,
           size: {
@@ -165,22 +210,20 @@ async function insertImagesOnSlide(slides, drive, presentationId, slideId, image
         presentationId,
         requestBody: { requests: [createReq] },
       });
-      console.log(`  ✅ Created image ${j} on slide ${slideId}`);
+      console.log(`  ✅ Created image ${j} on slide ${slideId}${proxied ? ' (rounded corners)' : ''}`);
     } catch (err) {
-      console.warn(`  ⚠️ Direct createImage failed for image ${j} on slide ${slideId}: ${err.message}`);
-      // Fallback: proxy through Google Drive
-      const proxied = await proxyImageToDrive(drive, imgUrl);
+      console.warn(`  ⚠️ createImage failed for image ${j} on slide ${slideId}: ${err.message}`);
+      // If proxied URL failed, try original URL as last resort
       if (proxied) {
-        tempFileIds.push(proxied.fileId);
-        createReq.createImage.url = proxied.url;
+        createReq.createImage.url = imgUrl;
         try {
           await slides.presentations.batchUpdate({
             presentationId,
             requestBody: { requests: [createReq] },
           });
-          console.log(`  ✅ Created image ${j} on slide ${slideId} via Drive proxy`);
-        } catch (proxyErr) {
-          console.warn(`  ⚠️ Drive proxy createImage also failed for slide ${slideId}: ${proxyErr.message}`);
+          console.log(`  ✅ Created image ${j} on slide ${slideId} (fallback, no rounded corners)`);
+        } catch (fallbackErr) {
+          console.warn(`  ⚠️ Fallback also failed for slide ${slideId}: ${fallbackErr.message}`);
         }
       }
     }
