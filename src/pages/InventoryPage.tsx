@@ -861,9 +861,14 @@ const InventoryPage = () => {
           <p className="text-muted-foreground">Manage all advertising locations</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => exportProductsToExcel(filteredProducts)}>
+          <Button variant="outline" onClick={() => {
+            const productsToExport = selectedProductIds.size > 0
+              ? products.filter(p => selectedProductIds.has(p.id))
+              : filteredProducts
+            exportProductsToExcel(productsToExport)
+          }}>
             <FileSpreadsheet className="mr-2 h-4 w-4 text-green-600" />
-            Export Excel
+            Export Excel{selectedProductIds.size > 0 ? ` (${selectedProductIds.size})` : ''}
           </Button>
           {selectedProductIds.size > 0 && (
             <Button
