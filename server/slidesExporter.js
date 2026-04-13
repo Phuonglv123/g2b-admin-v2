@@ -422,8 +422,16 @@ function buildPlaceholderMap(product) {
   // Near by / landmark (translated to English)
   const landmark = translateToEnglish(product.landmark || '');
 
-  // Visibility from note (translated to English)
-  const visibility = translateToEnglish(attrs.note || '');
+  // Parse note field — may contain "Minimum Booking: X" mixed with visibility info
+  const rawNote = attrs.note || '';
+  const minBookingMatch = rawNote.match(/Minimum\s*Booking[:\s]*(.+)/i);
+  const minBookingFromNote = minBookingMatch ? translateToEnglish(minBookingMatch[1].trim()) : '';
+  // Visibility = note text WITHOUT the "Minimum Booking" part
+  const noteWithoutBooking = rawNote.replace(/Minimum\s*Booking[:\s]*.*/i, '').trim();
+  const visibility = translateToEnglish(noteWithoutBooking);
+
+  // Booking minimum: prefer value from note, fallback to booking_duration
+  const bookingMinimum = minBookingFromNote || bookingDurationEn;
 
   // Description - max 200 chars (translated to English)
   const description = translateToEnglish((product.description || '').slice(0, 200));
@@ -469,7 +477,7 @@ function buildPlaceholderMap(product) {
     '{{provider_name}}': providerName,
     '{{currency}}': currency,
     '{{Near By}}': "",
-    '{{Booking minimum}}': bookingDuration,
+    '{{Booking minimum}}': bookingMinimum,
     
     // Single-brace format {key} — matching template in screenshot
     '{product_name}': productName,
