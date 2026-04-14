@@ -19,7 +19,7 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { extractProductFromFile, type ExtractedPDFData, type ExtractionResult, type DetectedItem } from '@/lib/claudeService'
+import { extractProductFromFile, type ExtractedPDFData, type ExtractionResult, type DetectedItem, type ExtractionMeta, type ExtractionConfidence, computeCorrectionsSummary, submitExtractionFeedback } from '@/lib/claudeService'
 
 interface FileCardProps {
   onExtracted: (data: ExtractedPDFData, file: File) => void
@@ -35,6 +35,9 @@ interface FileData {
   status: AnalysisStatus
   result?: ExtractionResult
   extractedData?: ExtractedPDFData
+  originalExtraction?: ExtractedPDFData  // Snapshot before user edits
+  meta?: ExtractionMeta
+  confidence?: ExtractionConfidence
 }
 
 // Form data interface for extracted/editable fields
@@ -153,20 +156,29 @@ export const ModernPDFUploader = ({
     try {
       const result = await extractProductFromFile(fileData.file)
 
-      setFiles((prev) =>
-        prev.map((f, i) =>
-          i === index
-            ? {
-                ...f,
-                status: result.success ? 'success' : 'error',
-                result,
-                extractedData: result.data,
-              }
-            : f
-        )
-      )
-
       if (result.success && result.data) {
+        // Store original extraction as immutable snapshot for feedback comparison
+        const originalSnapshot = JSON.parse(JSON.stringify(result.data)) as ExtractedPDFData
+        
+        // Get confidence from first product
+        const firstProductConfidence = result.data.products[0]?.confidence
+
+        setFiles((prev) =>
+          prev.map((f, i) =>
+            i === index
+              ? {
+                  ...f,
+                  status: 'success',
+                  result,
+                  extractedData: result.data,
+                  originalExtraction: originalSnapshot,
+                  meta: result.meta,
+                  confidence: firstProductConfidence,
+                }
+              : f
+          )
+        )
+
         // Populate form with extracted data
         const firstProduct = result.data.products[0]
         setFormData({
@@ -182,8 +194,16 @@ export const ModernPDFUploader = ({
           vatAmount: '',
         })
         setDetectedItems(result.data.detected_items || [])
-      } else if (result.error) {
-        onError?.(result.error)
+      } else {
+        // Extract failed
+        setFiles((prev) =>
+          prev.map((f, i) =>
+            i === index
+              ? { ...f, status: 'error', result }
+              : f
+          )
+        )
+        if (result.error) onError?.(result.error)
       }
     } catch (error) {
       setFiles((prev) =>
@@ -213,18 +233,68 @@ export const ModernPDFUploader = ({
     }
   }, [files, analyzeFile])
 
-  // Save current file data
-  const saveFile = useCallback(() => {
+  // Save current file data + submit feedback
+  const saveFile = useCallback(async () => {
     if (currentFile?.extractedData) {
       onExtracted(currentFile.extractedData, currentFile.file)
+      
+      // Submit feedback for learning (async, non-blocking)
+      if (currentFile.originalExtraction) {
+        const { wasCorrected, summary } = computeCorrectionsSummary(
+          currentFile.originalExtraction,
+          currentFile.extractedData
+        )
+        
+        submitExtractionFeedback({
+          file_name: currentFile.file.name,
+          file_type: currentFile.file.type,
+          file_size: currentFile.file.size,
+          provider_name: currentFile.extractedData.provider_name,
+          original_extraction: currentFile.originalExtraction,
+          corrected_data: currentFile.extractedData,
+          was_corrected: wasCorrected,
+          corrections_summary: wasCorrected ? summary : undefined,
+          ai_confidence: currentFile.confidence,
+          input_tokens: currentFile.result?.usage?.inputTokens,
+          output_tokens: currentFile.result?.usage?.outputTokens,
+          pass2_corrected: currentFile.meta?.pass2Corrected,
+          few_shot_count: currentFile.meta?.fewShotCount,
+        }).then(res => {
+          if (res.success) {
+            console.log('📝 Feedback submitted for learning')
+          }
+        }).catch(() => {
+          // Non-critical - don't block user
+        })
+      }
     }
   }, [currentFile, onExtracted])
 
-  // Save all files
+  // Save all files + submit feedback for each
   const saveAll = useCallback(() => {
     files.forEach(f => {
       if (f.status === 'success' && f.extractedData) {
         onExtracted(f.extractedData, f.file)
+        
+        // Submit feedback for each file
+        if (f.originalExtraction) {
+          const { wasCorrected, summary } = computeCorrectionsSummary(f.originalExtraction, f.extractedData)
+          submitExtractionFeedback({
+            file_name: f.file.name,
+            file_type: f.file.type,
+            file_size: f.file.size,
+            provider_name: f.extractedData.provider_name,
+            original_extraction: f.originalExtraction,
+            corrected_data: f.extractedData,
+            was_corrected: wasCorrected,
+            corrections_summary: wasCorrected ? summary : undefined,
+            ai_confidence: f.confidence,
+            input_tokens: f.result?.usage?.inputTokens,
+            output_tokens: f.result?.usage?.outputTokens,
+            pass2_corrected: f.meta?.pass2Corrected,
+            few_shot_count: f.meta?.fewShotCount,
+          }).catch(() => {})
+        }
       }
     })
   }, [files, onExtracted])
@@ -358,7 +428,11 @@ export const ModernPDFUploader = ({
                 {currentFile.status === 'success' && (
                   <div className="flex items-center gap-2 bg-emerald-500/90 backdrop-blur-sm px-3 py-1.5 rounded-full">
                     <CheckCircle className="h-4 w-4 text-white" />
-                    <span className="text-xs text-white">Completed</span>
+                    <span className="text-xs text-white">
+                      {currentFile.confidence?.overall 
+                        ? `${Math.round(currentFile.confidence.overall * 100)}% confident` 
+                        : 'Completed'}
+                    </span>
                   </div>
                 )}
                 {currentFile.status === 'error' && (
@@ -600,6 +674,45 @@ export const ModernPDFUploader = ({
             </div>
           </div>
 
+          {/* Confidence & Learning indicator */}
+          {currentFile?.status === 'success' && currentFile.confidence && (
+            <div className="flex items-center gap-3 p-3 bg-gradient-to-r from-blue-500/10 to-cyan-500/10 rounded-xl border border-blue-500/20">
+              <div className="flex-1 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium text-blue-700 dark:text-blue-400">AI Confidence</span>
+                  <span className="text-xs text-muted-foreground">
+                    {currentFile.meta?.fewShotCount ? `📚 ${currentFile.meta.fewShotCount} examples used` : ''}
+                    {currentFile.meta?.pass2Corrected ? ' • 🔧 Auto-corrected' : ''}
+                  </span>
+                </div>
+                <div className="flex gap-2">
+                  {[
+                    { label: 'Location', value: currentFile.confidence.location },
+                    { label: 'Pricing', value: currentFile.confidence.pricing },
+                    { label: 'Specs', value: currentFile.confidence.specifications },
+                  ].filter(c => c.value != null).map(c => (
+                    <div key={c.label} className="flex-1">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-[10px] text-muted-foreground">{c.label}</span>
+                        <span className={`text-[10px] font-medium ${
+                          (c.value || 0) >= 0.8 ? 'text-emerald-600' : (c.value || 0) >= 0.6 ? 'text-amber-600' : 'text-red-600'
+                        }`}>{Math.round((c.value || 0) * 100)}%</span>
+                      </div>
+                      <div className="h-1 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                        <div 
+                          className={`h-full rounded-full transition-all ${
+                            (c.value || 0) >= 0.8 ? 'bg-emerald-500' : (c.value || 0) >= 0.6 ? 'bg-amber-500' : 'bg-red-500'
+                          }`}
+                          style={{ width: `${(c.value || 0) * 100}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Detected Items */}
           {detectedItems.length > 0 && (
             <div className="space-y-3">
@@ -643,13 +756,18 @@ export const ModernPDFUploader = ({
 
           {/* Save button */}
           {currentFile?.status === 'success' && (
-            <Button
-              onClick={saveFile}
-              className="w-full gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700"
-            >
-              <Save className="h-4 w-4" />
-              Save Document
-            </Button>
+            <div className="space-y-2">
+              <Button
+                onClick={saveFile}
+                className="w-full gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700"
+              >
+                <Save className="h-4 w-4" />
+                Save Document
+              </Button>
+              <p className="text-[10px] text-center text-muted-foreground">
+                Your corrections help Claude learn and improve future extractions
+              </p>
+            </div>
           )}
         </div>
       </div>

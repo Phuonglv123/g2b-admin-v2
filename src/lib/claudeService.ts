@@ -131,6 +131,14 @@ export async function aiSearchProducts(
 // PRODUCT EXTRACTION TYPES
 // =============================================
 
+// Confidence scores per field group
+export interface ExtractionConfidence {
+  location?: number     // 0.0-1.0
+  pricing?: number      // 0.0-1.0
+  specifications?: number // 0.0-1.0
+  overall: number       // 0.0-1.0
+}
+
 // Extended location interface for AI extraction
 export interface ExtractedLocationData {
   name: string
@@ -158,6 +166,7 @@ export interface ExtractedProductData {
   description: string
   location: ExtractedLocationData
   attributes: ProductAttributes
+  confidence?: ExtractionConfidence
 }
 
 // New interface for detected items from documents (like invoice items)
@@ -172,6 +181,14 @@ export interface ExtractedPDFData {
   provider_name: string
   products: ExtractedProductData[]
   detected_items?: DetectedItem[]
+  _pass2_corrected?: boolean
+}
+
+// Extraction metadata from server 
+export interface ExtractionMeta {
+  fewShotCount: number
+  hasProviderTemplate: boolean
+  pass2Corrected: boolean
 }
 
 export interface ExtractionResult {
@@ -183,6 +200,7 @@ export interface ExtractionResult {
     inputTokens: number
     outputTokens: number
   }
+  meta?: ExtractionMeta
 }
 
 /**
@@ -234,7 +252,8 @@ export async function extractProductFromFile(file: File): Promise<ExtractionResu
       success: true,
       data: normalizedData,
       rawResponse: result.rawResponse,
-      usage: result.usage
+      usage: result.usage,
+      meta: result.meta
     }
   } catch (error) {
     console.error('Claude extraction error:', error)
@@ -398,6 +417,135 @@ export async function extractProductsFromFiles(files: File[]): Promise<Extractio
   }
   
   return results
+}
+
+// =============================================
+// FEEDBACK & LEARNING API
+// =============================================
+
+export interface FeedbackSubmission {
+  user_id?: string
+  file_name: string
+  file_type: string
+  file_size: number
+  provider_name: string
+  original_extraction: ExtractedPDFData
+  corrected_data: ExtractedPDFData
+  was_corrected: boolean
+  corrections_summary?: Record<string, { from: unknown; to: unknown }>
+  ai_confidence?: ExtractionConfidence
+  input_tokens?: number
+  output_tokens?: number
+  pass2_corrected?: boolean
+  few_shot_count?: number
+}
+
+/**
+ * Compare two extraction results and generate a corrections summary
+ */
+export function computeCorrectionsSummary(
+  original: ExtractedPDFData,
+  corrected: ExtractedPDFData
+): { wasCorrected: boolean; summary: Record<string, { from: unknown; to: unknown }> } {
+  const summary: Record<string, { from: unknown; to: unknown }> = {}
+  
+  if (original.provider_name !== corrected.provider_name) {
+    summary['provider_name'] = { from: original.provider_name, to: corrected.provider_name }
+  }
+  
+  // Compare first product (most common case)
+  const origP = original.products[0]
+  const corrP = corrected.products[0]
+  
+  if (origP && corrP) {
+    const fieldsToCompare: (keyof ExtractedProductData)[] = [
+      'product_name', 'product_code', 'type', 'cost', 'currency', 
+      'traffic', 'booking_duration', 'production_cost', 'description'
+    ]
+    
+    for (const field of fieldsToCompare) {
+      if (String(origP[field] ?? '') !== String(corrP[field] ?? '')) {
+        summary[`product.${field}`] = { from: origP[field], to: corrP[field] }
+      }
+    }
+    
+    // Compare location
+    if (origP.location && corrP.location) {
+      const locFields: (keyof ExtractedLocationData)[] = [
+        'address', 'street_number', 'street_name', 'ward', 'city_province', 'landmark', 'gps_coordinates'
+      ]
+      for (const field of locFields) {
+        if (String(origP.location[field] ?? '') !== String(corrP.location[field] ?? '')) {
+          summary[`location.${field}`] = { from: origP.location[field], to: corrP.location[field] }
+        }
+      }
+    }
+    
+    // Compare attributes
+    if (origP.attributes && corrP.attributes) {
+      const attrFields: (keyof ProductAttributes)[] = [
+        'width', 'height', 'lighting', 'material', 'add_side'
+      ]
+      for (const field of attrFields) {
+        if (String(origP.attributes[field] ?? '') !== String(corrP.attributes[field] ?? '')) {
+          summary[`attributes.${field}`] = { from: origP.attributes[field], to: corrP.attributes[field] }
+        }
+      }
+    }
+  }
+  
+  // Product count changed
+  if (original.products.length !== corrected.products.length) {
+    summary['products_count'] = { from: original.products.length, to: corrected.products.length }
+  }
+  
+  return {
+    wasCorrected: Object.keys(summary).length > 0,
+    summary
+  }
+}
+
+/**
+ * Submit extraction feedback to the server for learning
+ */
+export async function submitExtractionFeedback(feedback: FeedbackSubmission): Promise<{ success: boolean; error?: string }> {
+  try {
+    const response = await fetch(`${CLAUDE_PROXY_URL}/api/extraction-feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(feedback)
+    })
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}))
+      return { success: false, error: errorData.error || `Server error: ${response.status}` }
+    }
+
+    const result = await response.json()
+    return { success: result.success, error: result.error }
+  } catch (error) {
+    console.error('Feedback submission error:', error)
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
+  }
+}
+
+/**
+ * Get extraction accuracy stats
+ */
+export async function getExtractionStats(): Promise<{
+  total: number
+  corrected: number
+  accuracy_rate: string
+  providers: Array<{ provider_name: string; total_extractions: number; correction_rate: number; avg_confidence: number }>
+}> {
+  try {
+    const response = await fetch(`${CLAUDE_PROXY_URL}/api/extraction-stats`)
+    if (!response.ok) throw new Error('Failed to fetch stats')
+    const result = await response.json()
+    return result.data
+  } catch {
+    return { total: 0, corrected: 0, accuracy_rate: 'N/A', providers: [] }
+  }
 }
 
 /**

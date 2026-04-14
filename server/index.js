@@ -5,12 +5,24 @@ import Anthropic from '@anthropic-ai/sdk';
 import dotenv from 'dotenv';
 import sharp from 'sharp';
 import pdfParse from 'pdf-parse';
+import { createClient } from '@supabase/supabase-js';
 import { exportProductToSlides, exportMultipleProductsToSlides, downloadPresentationAsPptx, inspectTemplate } from './slidesExporter.js';
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// Initialize Supabase client for feedback storage
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+let supabase = null;
+if (supabaseUrl && supabaseServiceKey) {
+  supabase = createClient(supabaseUrl, supabaseServiceKey);
+  console.log('Supabase client initialized for feedback storage');
+} else {
+  console.warn('Supabase credentials not found - feedback storage disabled');
+}
 
 // Configure multer for file uploads
 const storage = multer.memoryStorage();
@@ -38,7 +50,8 @@ app.get('/health', (req, res) => {
 });
 
 // Product extraction prompt - optimized for Vietnamese advertising product PDFs
-const EXTRACTION_PROMPT = `
+// Moved to system message for prompt caching support
+const EXTRACTION_SYSTEM_PROMPT = `
 Bạn là AI chuyên trích xuất thông tin sản phẩm quảng cáo ngoài trời (OOH - Out of Home) từ tài liệu PDF tiếng Việt.
 Hãy phân tích kỹ toàn bộ nội dung và trích xuất chính xác từng trường thông tin.
 
@@ -192,6 +205,206 @@ Hãy phân tích kỹ toàn bộ nội dung và trích xuất chính xác từng
 18. illumination_time: Thời gian chiếu sáng riêng (thường 18:00-22:00 cho billboard). Khác với Operating Hours
 `;
 
+// User-facing extraction instruction (sent with the document)
+const EXTRACTION_USER_INSTRUCTION = `Hãy phân tích tài liệu này và trích xuất TẤT CẢ sản phẩm OOH theo đúng schema đã định nghĩa trong system prompt. Sử dụng tool save_extracted_products để trả về kết quả.`;
+
+// =============================================
+// TOOL USE SCHEMA - Structured Output
+// =============================================
+const EXTRACTION_TOOL = {
+  name: 'save_extracted_products',
+  description: 'Save extracted product data from a Vietnamese OOH advertising PDF/image document. Call this tool with the structured data you extracted.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      provider_name: {
+        type: 'string',
+        description: 'Tên nhà cung cấp/công ty từ logo, header, footer'
+      },
+      products: {
+        type: 'array',
+        description: 'Danh sách sản phẩm trích xuất được',
+        items: {
+          type: 'object',
+          properties: {
+            product_code: { type: 'string', description: 'Mã sản phẩm từ PDF (giữ nguyên)' },
+            product_name: { type: 'string', description: 'Tên vị trí/sản phẩm, tối đa 40 ký tự', maxLength: 40 },
+            type: { type: 'string', enum: ['billboard', 'digital', 'led', 'transit', 'poster', 'banner', 'other'] },
+            areas: { type: 'array', items: { type: 'string' } },
+            cost: { type: 'number', description: 'Chi phí thuê (CHỈ số, không ký tự tiền tệ). KHÔNG nhầm với traffic/OTC/VAC' },
+            currency: { type: 'string', enum: ['VND', 'USD'], default: 'VND' },
+            traffic: { type: 'string', description: 'Lưu lượng giao thông (giữ nguyên text). OTC/VAC/OTS/impressions luôn vào đây' },
+            booking_duration: { type: 'string', description: 'Thời hạn thuê, VD: 1 tháng, 6 tháng' },
+            production_cost: { type: 'string', description: 'Phí sản xuất (text)' },
+            description: { type: 'string', description: 'Mô tả tổng hợp' },
+            confidence: {
+              type: 'object',
+              description: 'Confidence score (0.0-1.0) cho từng nhóm field',
+              properties: {
+                location: { type: 'number', minimum: 0, maximum: 1 },
+                pricing: { type: 'number', minimum: 0, maximum: 1 },
+                specifications: { type: 'number', minimum: 0, maximum: 1 },
+                overall: { type: 'number', minimum: 0, maximum: 1 }
+              },
+              required: ['overall']
+            },
+            location: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                address: { type: 'string', description: 'Địa chỉ đầy đủ' },
+                street_number: { type: 'string' },
+                street_name: { type: 'string' },
+                ward: { type: 'string' },
+                city_province: { type: 'string' },
+                landmark: { type: 'string', description: 'Hướng nhìn / Location Highlights' },
+                gps_coordinates: { type: 'string', description: 'Giữ nguyên text GPS từ PDF' },
+                currency: { type: 'string', enum: ['VND', 'USD'] },
+                local_tax: { type: ['number', 'null'] }
+              },
+              required: ['name', 'address', 'city_province']
+            },
+            attributes: {
+              type: 'object',
+              properties: {
+                width: { type: 'number', description: 'Chiều rộng (mét)' },
+                height: { type: 'number', description: 'Chiều cao (mét)' },
+                video_duration: { type: 'number', description: 'Thời lượng spot (giây)' },
+                pixel_width: { type: 'number' },
+                pixel_height: { type: 'number' },
+                opera_time_from: { type: 'string', description: 'HH:mm' },
+                opera_time_to: { type: 'string', description: 'HH:mm' },
+                frequency: { type: 'string' },
+                shape: { type: 'string', enum: ['rectangle', 'square', 'vertical', 'horizontal', 'circular', 'other'] },
+                note: { type: 'string' },
+                add_side: { type: 'number', description: 'Số mặt' },
+                quantity_of_ad: { type: 'number' },
+                lighting: { type: 'string', description: 'Mô tả chiếu sáng (text, VD: "8 đèn LED pha")' },
+                material: { type: 'string', description: 'Vật liệu (VD: "Hiflex", "LED Module")' },
+                illumination_time_from: { type: 'string', description: 'HH:mm' },
+                illumination_time_to: { type: 'string', description: 'HH:mm' }
+              }
+            }
+          },
+          required: ['product_name', 'type', 'cost', 'location']
+        }
+      },
+      detected_items: {
+        type: 'array',
+        description: 'Các mục/dịch vụ phát hiện được từ PDF',
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            description: { type: 'string' },
+            value: { type: 'string' }
+          },
+          required: ['name', 'value']
+        }
+      }
+    },
+    required: ['provider_name', 'products']
+  }
+};
+
+// =============================================
+// FEEDBACK & LEARNING HELPERS
+// =============================================
+
+/**
+ * Lookup few-shot examples for a provider from feedback history
+ */
+async function getFewShotExamples(providerHint, limit = 2) {
+  if (!supabase) return [];
+  
+  try {
+    let query = supabase
+      .from('extraction_feedback')
+      .select('original_extraction, corrected_data, provider_name, file_name')
+      .eq('was_corrected', true)
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    
+    // If we have a provider hint, prioritize that provider's examples
+    if (providerHint) {
+      query = supabase
+        .from('extraction_feedback')
+        .select('original_extraction, corrected_data, provider_name, file_name')
+        .eq('was_corrected', true)
+        .ilike('provider_name', `%${providerHint}%`)
+        .order('created_at', { ascending: false })
+        .limit(limit);
+    }
+    
+    const { data, error } = await query;
+    if (error) {
+      console.error('Error fetching few-shot examples:', error);
+      return [];
+    }
+    return data || [];
+  } catch (err) {
+    console.error('Few-shot lookup failed:', err);
+    return [];
+  }
+}
+
+/**
+ * Lookup provider template if exists
+ */
+async function getProviderTemplate(providerName) {
+  if (!supabase || !providerName) return null;
+  
+  try {
+    const { data, error } = await supabase
+      .from('provider_templates')
+      .select('*')
+      .ilike('provider_name', `%${providerName}%`)
+      .limit(1)
+      .single();
+    
+    if (error || !data) return null;
+    return data;
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * Build enhanced prompt with few-shot examples and provider template
+ * Returns { systemPrompt, userInstruction } for proper system/user separation
+ */
+function buildEnhancedPrompt(baseSystemPrompt, fewShotExamples, providerTemplate) {
+  let systemPrompt = baseSystemPrompt;
+  
+  // Add provider-specific hints to system prompt
+  if (providerTemplate) {
+    systemPrompt += `\n\n**=== PROVIDER TEMPLATE (${providerTemplate.provider_name}) ===**\n`;
+    systemPrompt += `Layout: ${providerTemplate.layout_hints}\n`;
+    if (providerTemplate.field_mapping) {
+      systemPrompt += `Field Mapping: ${JSON.stringify(providerTemplate.field_mapping)}\n`;
+    }
+    if (providerTemplate.extraction_notes) {
+      systemPrompt += `Notes: ${providerTemplate.extraction_notes}\n`;
+    }
+  }
+  
+  // Add few-shot examples to system prompt
+  if (fewShotExamples.length > 0) {
+    systemPrompt += `\n\n**=== VÍ DỤ THAM KHẢO (từ các lần extract trước đã được verify) ===**\n`;
+    systemPrompt += `Hãy tham khảo format và cách mapping field từ các ví dụ đã verify sau:\n\n`;
+    
+    fewShotExamples.forEach((ex, i) => {
+      systemPrompt += `--- Ví dụ ${i + 1} (Provider: ${ex.provider_name || 'Unknown'}, File: ${ex.file_name || 'N/A'}) ---\n`;
+      systemPrompt += `AI trích xuất ban đầu:\n${JSON.stringify(ex.original_extraction, null, 2).substring(0, 1500)}\n\n`;
+      systemPrompt += `Sau khi user verify & sửa:\n${JSON.stringify(ex.corrected_data, null, 2).substring(0, 1500)}\n\n`;
+    });
+    
+    systemPrompt += `Hãy học từ các correction pattern trên để extract chính xác hơn.\n`;
+  }
+  
+  return { systemPrompt, userInstruction: EXTRACTION_USER_INSTRUCTION };
+}
+
 // AI Search prompt for product recommendations
 const AI_SEARCH_PROMPT = `
 Bạn là AI trợ lý tìm kiếm sản phẩm quảng cáo ngoài trời (OOH). Nhiệm vụ của bạn là phân tích yêu cầu tìm kiếm của người dùng và xác định các tiêu chí tìm kiếm.
@@ -305,6 +518,100 @@ async function processPDF(buffer) {
 }
 
 /**
+ * Compress PDF by re-encoding embedded images at lower quality.
+ * Uses sharp to process the raw buffer - attempts to reduce oversized PDFs.
+ * Returns { compressed: true, buffer } or { compressed: false } if not possible.
+ */
+async function tryCompressPDF(buffer, targetSizeMB = 25) {
+  // If already under target, no compression needed
+  if (buffer.length <= targetSizeMB * 1024 * 1024) {
+    return { compressed: false };
+  }
+  
+  // For PDFs significantly over limit, compression won't help enough
+  // (PDF internal images can't be easily recompressed without a full PDF library)
+  // Return false to fall back to text extraction
+  console.log(`PDF (${(buffer.length / 1024 / 1024).toFixed(1)}MB) exceeds ${targetSizeMB}MB - text fallback will be used`);
+  return { compressed: false };
+}
+
+/**
+ * Convert PDF pages to individual image content blocks for Claude.
+ * This provides visual page-level analysis when native PDF document type is unavailable.
+ * Uses sharp's PDF support (requires libvips with poppler on the system).
+ */
+async function pdfPagesToImages(buffer, maxPages = 20) {
+  const imageBlocks = [];
+  
+  try {
+    // Try sharp-based PDF rendering (requires poppler)
+    const metadata = await sharp(buffer).metadata();
+    const pageCount = metadata.pages || 1;
+    const pagesToProcess = Math.min(pageCount, maxPages);
+    
+    console.log(`📄 Converting ${pagesToProcess}/${pageCount} PDF pages to images...`);
+    
+    for (let page = 0; page < pagesToProcess; page++) {
+      try {
+        const pageBuffer = await sharp(buffer, { page })
+          .resize(1568, 1568, { fit: 'inside', withoutEnlargement: true })
+          .jpeg({ quality: 70 })
+          .toBuffer();
+        
+        imageBlocks.push({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: 'image/jpeg',
+            data: pageBuffer.toString('base64')
+          }
+        });
+      } catch {
+        // Skip unrenderable pages
+        console.warn(`Could not render page ${page + 1}`);
+      }
+    }
+    
+    if (imageBlocks.length > 0) {
+      console.log(`✅ Converted ${imageBlocks.length} pages to images`);
+    }
+  } catch (err) {
+    // sharp PDF rendering not available (missing poppler) - this is expected on many systems
+    console.log('ℹ️ PDF-to-image conversion not available (sharp/poppler), using text fallback');
+  }
+  
+  return imageBlocks;
+}
+
+/**
+ * Upload a file to Anthropic Files API (beta) for reuse across multiple API calls.
+ * Returns file_id on success, null on failure (callers should fall back to base64).
+ */
+async function uploadToFilesAPI(buffer, filename, mimetype) {
+  try {
+    const file = new File([buffer], filename, { type: mimetype });
+    const result = await anthropic.beta.files.upload({ file });
+    console.log(`📤 Files API: Uploaded "${filename}" → ${result.id} (${(result.size_bytes / 1024 / 1024).toFixed(1)}MB)`);
+    return result.id;
+  } catch (err) {
+    console.warn(`⚠️ Files API upload failed: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Delete a file from Anthropic Files API. Best-effort cleanup.
+ */
+async function deleteFromFilesAPI(fileId) {
+  try {
+    await anthropic.beta.files.delete(fileId);
+    console.log(`🗑️ Files API: Deleted ${fileId}`);
+  } catch (err) {
+    console.warn(`⚠️ Files API delete failed for ${fileId}: ${err.message}`);
+  }
+}
+
+/**
  * Extract product data using Claude API
  */
 app.post('/api/extract', upload.single('file'), async (req, res) => {
@@ -321,34 +628,63 @@ app.post('/api/extract', upload.single('file'), async (req, res) => {
     console.log(`Processing file: ${originalname}, type: ${mimetype}, size: ${buffer.length} bytes`);
 
     let content = [];
+    let uploadedFileId = null; // Track Files API upload for cleanup
     
-    // Max file size for Claude API (roughly 20MB base64 = ~15MB raw)
-    const MAX_PDF_SIZE = 15 * 1024 * 1024; // 15MB
+    // Max file size for Claude API document type (~25MB raw → ~33MB base64, under 32MB request limit with overhead)
+    const MAX_PDF_SIZE = 25 * 1024 * 1024; // 25MB (increased from 15MB)
+    // Files API supports up to 500MB - use it for larger files
+    const MAX_FILES_API_SIZE = 500 * 1024 * 1024;
 
     if (mimetype === 'application/pdf') {
-      // Check if PDF is too large
-      if (buffer.length > MAX_PDF_SIZE) {
-        console.log(`PDF too large (${(buffer.length / 1024 / 1024).toFixed(2)}MB), extracting text instead...`);
-        
-        // Extract text from PDF and send as text
-        try {
-          const pdfData = await processPDF(buffer);
-          console.log(`Extracted ${pdfData.text.length} chars from ${pdfData.numPages} pages`);
-          
-          content = [
-            {
-              type: 'text',
-              text: `[PDF Document - ${pdfData.numPages} pages]\n\nExtracted text:\n${pdfData.text.substring(0, 50000)}\n\n${EXTRACTION_PROMPT}`
+      // Strategy 0: Try Files API first (upload once, reuse across Pass 1/2/3)
+      // Benefits: no base64 overhead, reusable across passes, handles up to 500MB
+      if (buffer.length <= MAX_FILES_API_SIZE) {
+        uploadedFileId = await uploadToFilesAPI(buffer, originalname, mimetype);
+      }
+      
+      if (uploadedFileId) {
+        // Files API upload succeeded - use file_id reference (no base64 needed)
+        content = [
+          {
+            type: 'document',
+            source: {
+              type: 'file',
+              file_id: uploadedFileId
             }
-          ];
-        } catch (pdfError) {
-          return res.status(400).json({
-            success: false,
-            error: `PDF quá lớn (${(buffer.length / 1024 / 1024).toFixed(1)}MB) và không thể đọc text. Vui lòng sử dụng file nhỏ hơn 15MB.`
-          });
+          }
+        ];
+      } else if (buffer.length > MAX_PDF_SIZE) {
+        // Files API failed and PDF is too large for base64 - try alternatives
+        console.log(`PDF too large (${(buffer.length / 1024 / 1024).toFixed(2)}MB), trying alternatives...`);
+        
+        // Strategy 1: Try converting pages to individual images (visual + layout preserved)
+        const pageImages = await pdfPagesToImages(buffer);
+        
+        if (pageImages.length > 0) {
+          // Successfully converted to images - send as individual page images
+          console.log(`📸 Using page-by-page image mode (${pageImages.length} pages)`);
+          content = [...pageImages];
+        } else {
+          // Strategy 2: Fall back to text extraction with page structure
+          try {
+            const pdfData = await processPDF(buffer);
+            console.log(`Extracted ${pdfData.text.length} chars from ${pdfData.numPages} pages`);
+            
+            content = [
+              {
+                type: 'text',
+                text: `[PDF Document - ${pdfData.numPages} pages - Text extraction mode]\n\nExtracted text:\n${pdfData.text.substring(0, 50000)}`
+              }
+            ];
+          } catch (pdfError) {
+            return res.status(400).json({
+              success: false,
+              error: `PDF quá lớn (${(buffer.length / 1024 / 1024).toFixed(1)}MB) và không thể đọc. Vui lòng sử dụng file nhỏ hơn 25MB.`
+            });
+          }
         }
       } else {
-        // PDF size is OK, send as document
+        // Files API failed but PDF is small enough for base64
         const base64Data = buffer.toString('base64');
         content = [
           {
@@ -358,30 +694,36 @@ app.post('/api/extract', upload.single('file'), async (req, res) => {
               media_type: 'application/pdf',
               data: base64Data
             }
-          },
-          {
-            type: 'text',
-            text: EXTRACTION_PROMPT
           }
         ];
       }
     } else if (mimetype.startsWith('image/')) {
-      // Process image
-      const processed = await processImage(buffer, mimetype);
-      content = [
-        {
-          type: 'image',
-          source: {
-            type: 'base64',
-            media_type: processed.mimeType,
-            data: processed.data
+      // For images: try Files API, fall back to base64
+      uploadedFileId = await uploadToFilesAPI(buffer, originalname, mimetype);
+      
+      if (uploadedFileId) {
+        content = [
+          {
+            type: 'image',
+            source: {
+              type: 'file',
+              file_id: uploadedFileId
+            }
           }
-        },
-        {
-          type: 'text',
-          text: EXTRACTION_PROMPT
-        }
-      ];
+        ];
+      } else {
+        const processed = await processImage(buffer, mimetype);
+        content = [
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: processed.mimeType,
+              data: processed.data
+            }
+          }
+        ];
+      }
     } else {
       return res.status(400).json({ 
         success: false, 
@@ -395,13 +737,56 @@ app.post('/api/extract', upload.single('file'), async (req, res) => {
     const MAX_RETRIES = 3;
     const RETRY_DELAY = 2000; // 2 seconds
     
+    // Phase 3: Try to detect provider from filename or early text for few-shot lookup
+    let providerHint = originalname.replace(/\.[^/.]+$/, '').substring(0, 50);
+    
+    // Fetch few-shot examples and provider template in parallel
+    const [fewShotExamples, providerTemplate] = await Promise.all([
+      getFewShotExamples(providerHint),
+      getProviderTemplate(providerHint)
+    ]);
+    
+    // Build enhanced system prompt + user instruction with learning data
+    const { systemPrompt, userInstruction } = buildEnhancedPrompt(EXTRACTION_SYSTEM_PROMPT, fewShotExamples, providerTemplate);
+    
+    if (fewShotExamples.length > 0) {
+      console.log(`📚 Injected ${fewShotExamples.length} few-shot examples for provider hint: "${providerHint}"`);
+    }
+    if (providerTemplate) {
+      console.log(`📋 Using provider template: ${providerTemplate.provider_name}`);
+    }
+    
+    // Add user instruction as the last text block in content
+    content.push({
+      type: 'text',
+      text: userInstruction
+    });
+    
+    // Build system message array with prompt caching
+    const systemMessages = [
+      {
+        type: 'text',
+        text: systemPrompt,
+        cache_control: { type: 'ephemeral' }  // Cache for 5 minutes
+      }
+    ];
+    
+    // === PASS 1: Initial extraction with Tool Use + Extended Thinking ===
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
-        console.log(`Claude API call attempt ${attempt}/${MAX_RETRIES}...`);
+        console.log(`Claude API PASS 1 attempt ${attempt}/${MAX_RETRIES}...`);
         
         message = await anthropic.messages.create({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 8192,
+          model: 'claude-sonnet-4-6',
+          max_tokens: 16000,
+          system: systemMessages,
+          thinking: {
+            type: 'enabled',
+            budget_tokens: 10000,
+            display: 'omitted'
+          },
+          tools: [EXTRACTION_TOOL],
+          tool_choice: { type: 'auto' },
           messages: [
             {
               role: 'user',
@@ -439,36 +824,255 @@ app.post('/api/extract', upload.single('file'), async (req, res) => {
       });
     }
 
-    // Extract text response
-    const responseText = message.content
-      .filter(block => block.type === 'text')
-      .map(block => block.text)
-      .join('\n');
+    // Extract data from tool_use response (Phase 1: structured output)
+    let extractedData;
+    const toolUseBlock = message.content.find(block => block.type === 'tool_use');
+    
+    if (toolUseBlock && toolUseBlock.input) {
+      extractedData = toolUseBlock.input;
+      console.log('✅ PASS 1: Extracted via Tool Use (structured output)');
+    } else {
+      // Fallback to text parsing if tool_use not returned
+      const responseText = message.content
+        .filter(block => block.type === 'text')
+        .map(block => block.text)
+        .join('\n');
 
-    // Parse JSON from response
-    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      return res.status(500).json({
-        success: false,
-        error: 'Could not extract JSON from AI response',
-        rawResponse: responseText
-      });
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        return res.status(500).json({
+          success: false,
+          error: 'Could not extract structured data from AI response',
+          rawResponse: responseText
+        });
+      }
+      extractedData = JSON.parse(jsonMatch[0]);
+      console.log('⚠️ PASS 1: Fell back to text JSON parsing');
     }
 
-    const extractedData = JSON.parse(jsonMatch[0]);
+    // === PASS 2: Validation & Self-correction (Phase 4) ===
+    let pass2Message;
+    try {
+      console.log('🔍 PASS 2: Validation pass starting...');
+      
+      const validationPrompt = `
+Bạn vừa trích xuất dữ liệu sản phẩm OOH từ tài liệu. Hãy KIỂM TRA LẠI kết quả và SỬA nếu cần.
+
+**KẾT QUẢ PASS 1:**
+${JSON.stringify(extractedData, null, 2)}
+
+**CHECKLIST KIỂM TRA (sửa nếu sai):**
+1. ⚠️ cost vs traffic: Có nhầm số OTC/VAC/OTS/lưu lượng vào cost không? 
+   - Nếu cost chứa giá trị giống traffic (OTC/VAC/impressions) → chuyển sang traffic
+   - cost phải là giá tiền thuê thực tế
+2. 📐 Kích thước: width/height có đúng đơn vị MÉT không? (không phải cm hoặc mm)
+3. 📍 GPS: gps_coordinates có giữ nguyên toàn bộ text từ PDF không?
+4. 🏢 provider_name: Có đúng tên công ty không? (không nhầm với tên sản phẩm)
+5. 📝 product_name: Có <= 40 ký tự không?
+6. 🏷️ type: billboard/led/digital có phân loại đúng không?
+7. 📍 Địa chỉ: street_number, street_name, ward, city_province có tách đúng không?
+8. 💡 lighting: Có mô tả dạng text không? (KHÔNG dùng số 0/1)
+9. 🔢 Confidence scores: Đánh giá lại confidence dựa trên chất lượng thông tin thực tế
+
+Nếu tất cả đều đúng, trả về kết quả GIỐNG HỆT. Nếu có sai, SỬA và trả về bản đã sửa.
+Thêm confidence scores nếu chưa có.`;
+
+      // Filter thinking/redacted_thinking blocks for multi-turn continuity
+      const pass1AssistantContent = message.content.filter(
+        block => block.type === 'thinking' || block.type === 'redacted_thinking' || block.type === 'tool_use' || block.type === 'text'
+      );
+
+      pass2Message = await anthropic.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 16000,
+        system: systemMessages,
+        thinking: {
+          type: 'enabled',
+          budget_tokens: 8000,
+          display: 'omitted'
+        },
+        tools: [EXTRACTION_TOOL],
+        tool_choice: { type: 'auto' },
+        messages: [
+          {
+            role: 'user',
+            content: content
+          },
+          {
+            role: 'assistant',
+            content: pass1AssistantContent
+          },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: toolUseBlock?.id || 'pass1_extraction',
+                content: JSON.stringify({ status: 'received', data: extractedData })
+              },
+              {
+                type: 'text',
+                text: validationPrompt
+              }
+            ]
+          }
+        ]
+      });
+      
+      const pass2ToolUse = pass2Message.content.find(block => block.type === 'tool_use');
+      if (pass2ToolUse && pass2ToolUse.input) {
+        const pass1Str = JSON.stringify(extractedData);
+        const pass2Str = JSON.stringify(pass2ToolUse.input);
+        
+        if (pass1Str !== pass2Str) {
+          console.log('🔧 PASS 2: Corrections applied');
+          extractedData = pass2ToolUse.input;
+          extractedData._pass2_corrected = true;
+        } else {
+          console.log('✅ PASS 2: No corrections needed');
+          extractedData._pass2_corrected = false;
+        }
+      }
+    } catch (pass2Error) {
+      console.warn('⚠️ PASS 2 failed, using PASS 1 result:', pass2Error.message);
+      // Pass 2 is optional - if it fails, we still have Pass 1 data
+    }
+
+    // === PASS 3 (optional): Citation-based source verification for PDF documents ===
+    // Citations tell us which page each piece of data came from
+    // Only run for PDFs sent as document type (not text fallback or images)
+    let citations = null;
+    const isPDFDocument = content.some(block => 
+      block.type === 'document' && (block.source?.media_type === 'application/pdf' || block.source?.type === 'file')
+    );
+    
+    if (isPDFDocument && extractedData.products?.length > 0) {
+      try {
+        console.log('📑 PASS 3: Citation verification starting...');
+        
+        // Build citation document block - reuse file_id if available (saves re-uploading)
+        let citationDocBlock;
+        if (uploadedFileId) {
+          citationDocBlock = {
+            type: 'document',
+            source: { type: 'file', file_id: uploadedFileId },
+            citations: { enabled: true }
+          };
+        } else {
+          const pdfBlock = content.find(block => block.type === 'document');
+          citationDocBlock = {
+            ...pdfBlock,
+            citations: { enabled: true }
+          };
+        }
+        
+        const citationPrompt = `Hãy xác nhận từng sản phẩm sau được trích xuất từ TRANG nào trong PDF. 
+Với mỗi sản phẩm, trích dẫn đoạn text gốc trong PDF chứa thông tin chính (tên, địa chỉ, giá).
+
+Danh sách sản phẩm đã trích xuất:
+${extractedData.products.map((p, i) => `${i + 1}. "${p.product_name}" - ${p.location?.address || 'N/A'} - cost: ${p.cost}`).join('\n')}
+
+Trả lời ngắn gọn, chỉ cần nêu: Sản phẩm X → Trang Y, kèm trích dẫn ngắn.`;
+
+        const citationMessage = await anthropic.messages.create({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 4096,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                citationDocBlock,
+                {
+                  type: 'text',
+                  text: citationPrompt
+                }
+              ]
+            }
+          ]
+        });
+
+        // Parse citation response - extract page references
+        const citationBlocks = citationMessage.content.filter(block => 
+          block.type === 'text' && block.citations?.length > 0
+        );
+        
+        if (citationBlocks.length > 0) {
+          citations = {
+            sources: citationBlocks.flatMap(block => 
+              block.citations.map(c => ({
+                cited_text: c.cited_text,
+                page: c.start_page_number || null,
+                end_page: c.end_page_number || null,
+                type: c.type
+              }))
+            ),
+            summary: citationMessage.content
+              .filter(block => block.type === 'text')
+              .map(block => block.text)
+              .join('')
+          };
+          console.log(`✅ PASS 3: Found ${citations.sources.length} citation sources`);
+        }
+        
+        // Add citation usage to totals
+        if (citationMessage.usage) {
+          pass2Message = pass2Message || {};
+          pass2Message.usage = pass2Message.usage || {};
+          // Track citation tokens separately
+          extractedData._citation_tokens = {
+            input: citationMessage.usage.input_tokens || 0,
+            output: citationMessage.usage.output_tokens || 0
+          };
+        }
+      } catch (citationError) {
+        console.warn('⚠️ PASS 3 (Citations) failed, skipping:', citationError.message);
+        // Citations are optional - extraction data is already complete
+      }
+    }
+
+    // Calculate total usage across passes (including cache stats)
+    const totalUsage = {
+      inputTokens: (message.usage?.input_tokens || 0) + (pass2Message?.usage?.input_tokens || 0) + (extractedData._citation_tokens?.input || 0),
+      outputTokens: (message.usage?.output_tokens || 0) + (pass2Message?.usage?.output_tokens || 0) + (extractedData._citation_tokens?.output || 0),
+      cacheReadTokens: (message.usage?.cache_read_input_tokens || 0) + (pass2Message?.usage?.cache_read_input_tokens || 0),
+      cacheWriteTokens: (message.usage?.cache_creation_input_tokens || 0) + (pass2Message?.usage?.cache_creation_input_tokens || 0)
+    };
+    
+    // Clean up internal fields before sending response
+    delete extractedData._citation_tokens;
+
+    if (totalUsage.cacheReadTokens > 0) {
+      console.log(`💾 Cache hit: ${totalUsage.cacheReadTokens} tokens read from cache`);
+    }
 
     res.json({
       success: true,
       data: extractedData,
-      rawResponse: responseText,
-      usage: {
-        inputTokens: message.usage.input_tokens,
-        outputTokens: message.usage.output_tokens
+      rawResponse: JSON.stringify(extractedData, null, 2),
+      usage: totalUsage,
+      citations: citations,
+      meta: {
+        fewShotCount: fewShotExamples.length,
+        hasProviderTemplate: !!providerTemplate,
+        pass2Corrected: extractedData._pass2_corrected || false,
+        hasCitations: !!citations,
+        usedFilesAPI: !!uploadedFileId
       }
     });
 
+    // Cleanup: delete the uploaded file from Files API (best-effort, non-blocking)
+    if (uploadedFileId) {
+      deleteFromFilesAPI(uploadedFileId).catch(() => {});
+    }
+
   } catch (error) {
     console.error('Extraction error:', error);
+    
+    // Cleanup on error too
+    if (typeof uploadedFileId !== 'undefined' && uploadedFileId) {
+      deleteFromFilesAPI(uploadedFileId).catch(() => {});
+    }
+    
     res.status(500).json({
       success: false,
       error: error.message || 'Unknown error during extraction'
@@ -521,7 +1125,7 @@ ${productListStr}
 `;
 
     const message = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6',
       max_tokens: 1024,
       messages: [
         {
@@ -684,6 +1288,180 @@ app.get('/api/inspect-template', async (req, res) => {
   }
 });
 
+// =============================================
+// FEEDBACK & LEARNING ENDPOINTS
+// =============================================
+
+/**
+ * Submit extraction feedback (original vs corrected)
+ */
+app.post('/api/extraction-feedback', express.json({ limit: '10mb' }), async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(503).json({
+        success: false,
+        error: 'Feedback storage not configured (missing Supabase credentials)'
+      });
+    }
+
+    const {
+      user_id,
+      file_name,
+      file_type,
+      file_size,
+      provider_name,
+      original_extraction,
+      corrected_data,
+      was_corrected,
+      corrections_summary,
+      ai_confidence,
+      input_tokens,
+      output_tokens,
+      pass2_corrected,
+      few_shot_count
+    } = req.body;
+
+    if (!original_extraction || !corrected_data) {
+      return res.status(400).json({
+        success: false,
+        error: 'original_extraction and corrected_data are required'
+      });
+    }
+
+    const { data, error } = await supabase
+      .from('extraction_feedback')
+      .insert({
+        user_id: user_id || null,
+        file_name,
+        file_type,
+        file_size,
+        provider_name: provider_name || corrected_data.provider_name || 'Unknown',
+        original_extraction,
+        corrected_data,
+        was_corrected: was_corrected ?? false,
+        corrections_summary: corrections_summary || null,
+        ai_confidence: ai_confidence || null,
+        input_tokens: input_tokens || null,
+        output_tokens: output_tokens || null,
+        pass2_corrected: pass2_corrected || false,
+        few_shot_count: few_shot_count || 0
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Feedback save error:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to save feedback: ' + error.message
+      });
+    }
+
+    console.log(`📝 Feedback saved: ${file_name} (corrected: ${was_corrected})`);
+
+    res.json({
+      success: true,
+      data: { id: data.id }
+    });
+  } catch (error) {
+    console.error('Feedback endpoint error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Unknown error'
+    });
+  }
+});
+
+/**
+ * Get provider templates list
+ */
+app.get('/api/provider-templates', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.json({ success: true, data: [] });
+    }
+
+    const { data, error } = await supabase
+      .from('provider_templates')
+      .select('*')
+      .order('total_extractions', { ascending: false });
+
+    if (error) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+
+    res.json({ success: true, data: data || [] });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Update a provider template with custom hints
+ */
+app.put('/api/provider-templates/:id', express.json(), async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(503).json({ success: false, error: 'Supabase not configured' });
+    }
+
+    const { id } = req.params;
+    const { layout_hints, field_mapping, extraction_notes, example_json } = req.body;
+
+    const { data, error } = await supabase
+      .from('provider_templates')
+      .update({
+        layout_hints,
+        field_mapping,
+        extraction_notes,
+        example_json,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+
+    res.json({ success: true, data });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Get extraction feedback stats
+ */
+app.get('/api/extraction-stats', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.json({ success: true, data: { total: 0, corrected: 0, providers: [] } });
+    }
+
+    const [totalResult, correctedResult, providersResult] = await Promise.all([
+      supabase.from('extraction_feedback').select('id', { count: 'exact', head: true }),
+      supabase.from('extraction_feedback').select('id', { count: 'exact', head: true }).eq('was_corrected', true),
+      supabase.from('provider_templates').select('provider_name, total_extractions, correction_rate, avg_confidence').order('total_extractions', { ascending: false }).limit(20)
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        total: totalResult.count || 0,
+        corrected: correctedResult.count || 0,
+        accuracy_rate: totalResult.count > 0 
+          ? ((1 - (correctedResult.count / totalResult.count)) * 100).toFixed(1) + '%'
+          : 'N/A',
+        providers: providersResult.data || []
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Start server
 app.listen(PORT, () => {
   console.log(`🚀 Claude Proxy Server running on port ${PORT}`);
@@ -693,6 +1471,8 @@ app.listen(PORT, () => {
   console.log(`📊 Export Slides: POST http://localhost:${PORT}/api/export-slides`);
   console.log(`📊 Batch Export: POST http://localhost:${PORT}/api/export-slides-batch`);
   console.log(`🔧 Inspect Template: GET http://localhost:${PORT}/api/inspect-template`);
+  console.log(`📝 Feedback: POST http://localhost:${PORT}/api/extraction-feedback`);
+  console.log(`📈 Stats: GET http://localhost:${PORT}/api/extraction-stats`);
 });
 
 /**
@@ -746,7 +1526,7 @@ app.post('/api/ai-search', express.json(), async (req, res) => {
         console.log(`Claude AI Search attempt ${attempt}/${MAX_RETRIES}...`);
         
         message = await anthropic.messages.create({
-          model: 'claude-sonnet-4-20250514',
+          model: 'claude-sonnet-4-6',
           max_tokens: 4096,
           messages: [
             {
