@@ -132,6 +132,7 @@ const InventoryPage = () => {
   const [filterType, setFilterType] = useState<string>('all')
   const [filterStatus, setFilterStatus] = useState<string>('all')
   const [filterCity, setFilterCity] = useState<string>('all')
+  const [filterProvider, setFilterProvider] = useState<string>('all')
 
   // Pagination
   const [currentPage, setCurrentPage] = useState(1)
@@ -309,10 +310,11 @@ const InventoryPage = () => {
       const matchesType = filterType === 'all' || product.type === filterType
       const matchesStatus = filterStatus === 'all' || product.status === Number(filterStatus)
       const matchesCity = filterCity === 'all' || product.city_province === filterCity
+      const matchesProvider = filterProvider === 'all' || product.provider_id === filterProvider
 
-      return matchesSearch && matchesType && matchesStatus && matchesCity
+      return matchesSearch && matchesType && matchesStatus && matchesCity && matchesProvider
     })
-  }, [products, searchTerm, filterType, filterStatus, filterCity])
+  }, [products, searchTerm, filterType, filterStatus, filterCity, filterProvider])
 
   // Paginated products
   const paginatedProducts = useMemo(() => {
@@ -1055,6 +1057,19 @@ const InventoryPage = () => {
             {cities.map((city) => (
               <option key={city} value={city}>
                 {city}
+              </option>
+            ))}
+          </Select>
+          <Select
+            value={filterProvider}
+            onChange={(e) => setFilterProvider(e.target.value)}
+            className="w-[220px]"
+            disabled={isAISearchMode}
+          >
+            <option value="all">All Providers</option>
+            {providers.map((provider) => (
+              <option key={provider.id} value={provider.id}>
+                {provider.name}
               </option>
             ))}
           </Select>
