@@ -529,7 +529,7 @@ function buildPlaceholderMap(product) {
   // Format type/format
   const formatLabel = formatMediaType(product.type);
 
-  const ledCount = attrs.quantity_of_ad || attrs.add_side || '';
+  const ledCount =  attrs.add_side;
   const unitCount = ledCount ? String(ledCount).padStart(2, '0') : '';
   const quantityFaces = ledCount ? `${ledCount} face` : '';
 
@@ -579,7 +579,7 @@ function buildPlaceholderMap(product) {
     '{{product_name}}': productName,
     '{{product_code}}': product.product_code || '',
     '{{led_count}}': String(ledCount),
-    '{{unit_count}}': unitCount,
+    '{{unit_count}}': unitCount || '',
     '{{quantity_faces}}': quantityFaces,
     '{{traffic}}': traffic,
     '{{frequency}}': frequencyFull,
