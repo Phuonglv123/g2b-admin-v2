@@ -1,8 +1,8 @@
 import { supabase } from './supabase'
-import type { 
-  Product, 
+import type {
+  Product,
   ProductWithRelations,
-  CreateProductParams, 
+  CreateProductParams,
   UpdateProductParams,
   ProductStats,
   ProductFilters
@@ -58,8 +58,6 @@ export async function getProducts(filters?: ProductFilters): Promise<ProductWith
 }
 
 /**
- * Get product by ID with relations
- */
 export async function getProductById(id: string): Promise<ProductWithRelations> {
   const { data, error } = await supabase
     .from('products_view')
@@ -106,10 +104,15 @@ export async function createProduct(params: CreateProductParams): Promise<Produc
     location_address = parts.join(', ')
   }
 
+  // Enforce product_code format: type_timestamp
+  // Example: billboard_1715067123456
+  const product_code = await generateProductCode(params.type)
+
   const { data, error } = await supabase
     .from('products')
     .insert([{
       ...params,
+      product_code,
       location_address,
     }])
     .select()
@@ -229,56 +232,46 @@ export async function getProductStats(): Promise<ProductStats> {
   return stats
 }
 
-/**
- * Product code prefix mapping
- * Format: TYPE-XXXXXX (6 digits)
- */
-const PRODUCT_CODE_PREFIXES: Record<string, string> = {
-  billboard: 'BILL',
-  digital: 'DIGI',
-  led: 'LED',
-  transit: 'TRAN',
-  poster: 'POST',
-  banner: 'BANN',
-  other: 'OTH',
+function normalizeTypeForCode(type: string): string {
+  return type
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-z0-9_]/g, '') || 'other'
 }
 
 /**
  * Generate unique product code
- * Format: PREFIX-XXXXXX where PREFIX is based on product type
- * Examples: LED-123456, BILL-789012, DIGI-345678
+ * Format: type_timestamp
+ * Examples: billboard_1715067123456, led_1715067125872
  */
 export async function generateProductCode(type: string): Promise<string> {
-  // Get prefix based on type
-  const normalizedType = type.toLowerCase()
-  const prefix = PRODUCT_CODE_PREFIXES[normalizedType] || type.toUpperCase().substring(0, 4)
-  
-  // Generate 6-digit random number (ensuring it's always 6 digits)
-  const randomNumber = Math.floor(100000 + Math.random() * 900000) // 100000-999999
-  
-  // Check if code already exists in database
-  const proposedCode = `${prefix}-${randomNumber}`
-  
-  const { data: existingProduct } = await supabase
-    .from('products')
-    .select('id')
-    .eq('product_code', proposedCode)
-    .maybeSingle()
-  
-  // If code exists, generate a new one recursively
-  if (existingProduct) {
-    return generateProductCode(type)
+  const normalizedType = normalizeTypeForCode(type)
+
+  // Retry a few times in the unlikely case of same-millisecond collision
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const suffix = Date.now() + attempt
+    const proposedCode = `${normalizedType}_${suffix}`
+
+    const { data: existingProduct, error } = await supabase
+      .from('products')
+      .select('id')
+      .eq('product_code', proposedCode)
+      .maybeSingle()
+
+    if (error) throw error
+    if (!existingProduct) return proposedCode
   }
-  
-  return proposedCode
+
+  // Final fallback
+  return `${normalizedType}_${Date.now()}${Math.floor(Math.random() * 1000)}`
 }
 
 /**
- * Get the product code prefix for a given type
+ * Get normalized type used for product_code
  */
 export function getProductCodePrefix(type: string): string {
-  const normalizedType = type.toLowerCase()
-  return PRODUCT_CODE_PREFIXES[normalizedType] || type.toUpperCase().substring(0, 4)
+  return normalizeTypeForCode(type)
 }
 
 // =============================================

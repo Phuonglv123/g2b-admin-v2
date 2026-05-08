@@ -68,8 +68,12 @@ import { matchImagesByPagePosition, aiSearchProducts } from '@/lib/claudeService
 import { exportProductToSlides, exportMultipleProductsToSlides, type SlideExportResult } from '@/lib/slidesExportService'
 import { exportProductsToExcel, exportSingleProductToExcel } from '@/lib/excelExportService'
 import { geocodeAddress, buildFullAddress as buildGeoFullAddress, formatGPSCoordinates, isValidVietnamCoordinates } from '@/lib/geocodingService'
+import { resolveVietnamAddress } from '@/lib/vietnamAddressService'
+import { autoExportAndUpload } from '@/lib/exportUploadService'
+import { ragDeleteProducts, ragIndexProducts } from '@/lib/ragService'
 import type { ExtractedPDFData, ExtractedProductData, AISearchRecommendation } from '@/lib/claudeService'
 import type {
+  Product,
   ProductWithRelations,
   CreateProductParams,
   ProductType,
@@ -142,6 +146,7 @@ const InventoryPage = () => {
   const [isCreateOpen, setIsCreateOpen] = useState(false)
   const [isEditOpen, setIsEditOpen] = useState(false)
   const [isDeleteOpen, setIsDeleteOpen] = useState(false)
+  const [isBatchDeleteOpen, setIsBatchDeleteOpen] = useState(false)
   const [isViewOpen, setIsViewOpen] = useState(false)
   const [isAIUploadOpen, setIsAIUploadOpen] = useState(false)
   const [selectedProduct, setSelectedProduct] = useState<ProductWithRelations | null>(null)
@@ -173,6 +178,13 @@ const InventoryPage = () => {
   // Multi-select states
   const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(new Set())
   const [isBatchExporting, setIsBatchExporting] = useState(false)
+
+  const toProductWithRelationsForRag = (product: Product, providerName: string | null): ProductWithRelations => ({
+    ...product,
+    provider_name: providerName,
+    provider_phone: null,
+    user_name: null,
+  })
 
   // Export to Google Slides handler
   const handleExportToSlides = async (product: ProductWithRelations) => {
@@ -425,7 +437,7 @@ const InventoryPage = () => {
         }
       }
 
-      await createProduct({
+      const createdProduct = await createProduct({
         ...formData,
         user_id: user.id,
         location_name: formData.product_name, // Use product name as location name
@@ -442,6 +454,15 @@ const InventoryPage = () => {
         landmark: landmark || undefined,
         local_tax: localTax,
       } as CreateProductParams)
+
+      const providerName = providers.find(p => p.id === formData.provider_id)?.name || null
+      const ragProduct = toProductWithRelationsForRag(createdProduct, providerName)
+
+      const ragIndexResult = await ragIndexProducts([ragProduct])
+      if (!ragIndexResult.success) {
+        console.warn('RAG index warning (create):', ragIndexResult.error)
+      }
+
       await fetchData()
       setIsCreateOpen(false)
       await resetForm()
@@ -476,7 +497,7 @@ const InventoryPage = () => {
         }
       }
 
-      await updateProduct({
+      const updatedProduct = await updateProduct({
         id: selectedProduct.id,
         product_name: formData.product_name,
         type: formData.type,
@@ -505,6 +526,15 @@ const InventoryPage = () => {
         landmark: landmark || undefined,
         local_tax: localTax,
       })
+
+      const providerName = providers.find(p => p.id === (formData.provider_id || selectedProduct.provider_id))?.name || selectedProduct.provider_name || null
+      const ragProduct = toProductWithRelationsForRag(updatedProduct, providerName)
+
+      const ragIndexResult = await ragIndexProducts([ragProduct])
+      if (!ragIndexResult.success) {
+        console.warn('RAG index warning (update):', ragIndexResult.error)
+      }
+
       await fetchData()
       setIsEditOpen(false)
       await resetForm()
@@ -522,11 +552,40 @@ const InventoryPage = () => {
     try {
       setIsSubmitting(true)
       await deleteProduct(selectedProduct.id)
+
+      const ragDeleteResult = await ragDeleteProducts([selectedProduct.id])
+      if (!ragDeleteResult.success) {
+        console.warn('RAG delete warning (single):', ragDeleteResult.error)
+      }
+
       await fetchData()
       setIsDeleteOpen(false)
       setSelectedProduct(null)
     } catch (error) {
       console.error('Error deleting product:', error)
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  // Handle batch delete
+  const handleBatchDelete = async () => {
+    if (selectedProductIds.size === 0) return
+    try {
+      setIsSubmitting(true)
+      const productsToDelete = Array.from(selectedProductIds)
+      await Promise.all(productsToDelete.map(id => deleteProduct(id)))
+
+      const ragDeleteResult = await ragDeleteProducts(productsToDelete)
+      if (!ragDeleteResult.success) {
+        console.warn('RAG delete warning (batch):', ragDeleteResult.error)
+      }
+
+      await fetchData()
+      setIsBatchDeleteOpen(false)
+      setSelectedProductIds(new Set())
+    } catch (error) {
+      console.error('Error deleting products:', error)
     } finally {
       setIsSubmitting(false)
     }
@@ -639,6 +698,7 @@ const InventoryPage = () => {
 
       // 4. Process each product with matched images
       console.log(`📝 Processing ${data.products.length} products...`)
+      const createdProducts: Product[] = []
       for (let i = 0; i < data.products.length; i++) {
         const productData = data.products[i]
         const productImages = productImageMap.get(productData.product_name) || []
@@ -650,15 +710,61 @@ const InventoryPage = () => {
           productName: productData.product_name
         })
         console.log(`📝 Processing product ${i + 1}/${data.products.length}: ${productData.product_name} (${productImages.length} images)`)
-        await processExtractedProduct(productData, provider.id, productImages)
+        const created = await processExtractedProduct(productData, provider.id, productImages)
+        if (created) createdProducts.push(created)
+      }
+
+      if (createdProducts.length > 0) {
+        const ragProducts = createdProducts.map((p) => toProductWithRelationsForRag(p, data.provider_name))
+        const ragIndexResult = await ragIndexProducts(ragProducts)
+        if (!ragIndexResult.success) {
+          console.warn('RAG index warning (AI import):', ragIndexResult.error)
+        } else {
+          console.log(`🧠 RAG indexed ${ragIndexResult.indexedChunks || 0} chunks`)
+        }
       }
 
       // 5. Refresh products list
       await fetchData()
 
-      // 6. Close dialog and show success
+      // 6. Auto-generate export files (Excel, PPT, PDF) and upload to Supabase Storage
+      if (createdProducts.length > 0) {
+        setImportProgress(p => ({ ...p, step: 'Generating export files (Excel, PPT, PDF)...' }))
+        try {
+          // Augment created products with provider info for export compatibility
+          const productsToExport: ProductWithRelations[] = createdProducts.map(p => ({
+            ...p,
+            provider_name: data.provider_name,
+            provider_phone: null,
+            user_name: null,
+          }))
+
+          console.log(`📦 Auto-exporting ${productsToExport.length} products...`)
+          const exportResult = await autoExportAndUpload(
+            productsToExport,
+            data.provider_name,
+            undefined, // use default meta
+            (step) => setImportProgress(p => ({ ...p, step }))
+          )
+
+          if (exportResult.errors.length > 0) {
+            console.warn('⚠️ Export warnings:', exportResult.errors)
+          }
+
+          const exportLinks: string[] = []
+          if (exportResult.excelUrl) exportLinks.push(`Excel: ${exportResult.excelUrl}`)
+          if (exportResult.pptxUrl) exportLinks.push(`PPTX: ${exportResult.pptxUrl}`)
+          if (exportResult.pdfUrl) exportLinks.push(`PDF: ${exportResult.pdfUrl}`)
+          console.log(`✅ Export files uploaded:`, exportLinks)
+        } catch (exportError) {
+          // Export failure is non-critical — products are already saved
+          console.warn('⚠️ Auto-export failed (products were saved):', exportError)
+        }
+      }
+
+      // 7. Close dialog and show success
       setIsAIUploadOpen(false)
-      
+
       // Show result message
       const productCount = data.products.length
       const totalImages = Array.from(productImageMap.values()).reduce((sum, imgs) => sum + imgs.length, 0)
@@ -679,22 +785,30 @@ const InventoryPage = () => {
   }
 
   // Process a single extracted product (location embedded directly)
+  // Returns the created Product for chaining (e.g., auto-export)
   const processExtractedProduct = async (
-    data: ExtractedProductData, 
-    providerId: string, 
+    data: ExtractedProductData,
+    providerId: string,
     images: string[] = []
   ) => {
-    if (!user) return
+    if (!user) return null
 
     // Use product_code from AI if available, otherwise generate new one
     const code = data.product_code || await generateProductCode(data.type)
     
-    // Build location address from components
+    // Resolve address to canonical names + codes via Vietnam Provinces API
+    const resolved = await resolveVietnamAddress(
+      data.location.ward,
+      data.location.city_province
+    )
+    console.log(`📍 Address resolved: "${data.location.ward}, ${data.location.city_province}" → "${resolved.ward}, ${resolved.city_province}" (province_code=${resolved.province_code}, ward_code=${resolved.ward_code})`)
+
+    // Build location address from components using resolved canonical names
     const locationAddress = buildLocationAddress(
       data.location.street_number,
       data.location.street_name,
-      data.location.ward,
-      data.location.city_province
+      resolved.ward,
+      resolved.city_province
     )
 
     // Parse GPS coordinates if available
@@ -749,8 +863,8 @@ const InventoryPage = () => {
       description = `View: ${data.location.landmark}`
     }
 
-    // Create product with embedded location
-    await createProduct({
+    // Create product with embedded location and return it
+    return await createProduct({
       user_id: user.id,
       product_code: code,
       product_name: data.product_name,
@@ -764,13 +878,15 @@ const InventoryPage = () => {
       traffic: data.traffic,
       booking_duration: data.booking_duration,
       provider_id: providerId,
-      // Embedded location fields
+      // Embedded location fields (using resolved canonical names + codes)
       location_name: data.location.name || data.product_name,
       location_address: locationAddress || data.location.address,
       street_number: data.location.street_number,
       street_name: data.location.street_name,
-      ward: data.location.ward,
-      city_province: data.location.city_province || 'Ho Chi Minh',
+      ward: resolved.ward,
+      ward_code: resolved.ward_code,
+      city_province: resolved.city_province,
+      province_code: resolved.province_code,
       latitude,
       longitude,
       gps_coordinates: gpsCoordinates,
@@ -873,18 +989,28 @@ const InventoryPage = () => {
             Export Excel{selectedProductIds.size > 0 ? ` (${selectedProductIds.size})` : ''}
           </Button>
           {selectedProductIds.size > 0 && (
-            <Button
-              variant="outline"
-              onClick={handleBatchExportToSlides}
-              disabled={isBatchExporting}
-            >
-              {isBatchExporting ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <FileDown className="mr-2 h-4 w-4 text-blue-500" />
-              )}
-              Export PPT ({selectedProductIds.size})
-            </Button>
+            <>
+              <Button
+                variant="outline"
+                onClick={handleBatchExportToSlides}
+                disabled={isBatchExporting}
+              >
+                {isBatchExporting ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <FileDown className="mr-2 h-4 w-4 text-blue-500" />
+                )}
+                Export PPT ({selectedProductIds.size})
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => setIsBatchDeleteOpen(true)}
+                disabled={isSubmitting}
+              >
+                <Trash2 className="mr-2 h-4 w-4 text-destructive" />
+                Delete ({selectedProductIds.size})
+              </Button>
+            </>
           )}
           <Button variant="outline" onClick={() => navigate('/import')}>
             <Sparkles className="mr-2 h-4 w-4" />
@@ -2061,6 +2187,44 @@ const InventoryPage = () => {
             <Button variant="destructive" onClick={handleDelete} disabled={isSubmitting}>
               {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Batch Delete Confirmation Dialog */}
+      <Dialog open={isBatchDeleteOpen} onOpenChange={setIsBatchDeleteOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Multiple Products</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-muted-foreground">
+              Are you sure you want to delete <strong>{selectedProductIds.size} product(s)</strong>? This action cannot be
+              undone.
+            </p>
+            <div className="max-h-48 overflow-y-auto rounded-lg border border-border bg-muted/30 p-3">
+              <ul className="space-y-2 text-sm">
+                {products
+                  .filter(p => selectedProductIds.has(p.id))
+                  .map(product => (
+                    <li key={product.id} className="flex items-center gap-2">
+                      <span className="h-1.5 w-1.5 rounded-full bg-destructive" />
+                      <span>{product.product_code}</span>
+                      <span className="text-muted-foreground">-</span>
+                      <span className="font-medium">{product.product_name}</span>
+                    </li>
+                  ))}
+              </ul>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsBatchDeleteOpen(false)} disabled={isSubmitting}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleBatchDelete} disabled={isSubmitting}>
+              {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Delete {selectedProductIds.size} Product(s)
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -408,6 +408,126 @@ export async function findWardByName(
 }
 
 /**
+ * Resolve free-text ward/city_province from AI extraction into canonical names + codes.
+ *
+ * Handles common issues:
+ * - Claude puts district ("Quận 1") into city_province instead of province ("Thành phố Hồ Chí Minh")
+ * - Inconsistent naming: "Q1", "Quận 1", "quận 1", "TP.HCM", "Ho Chi Minh"
+ * - Missing province_code and ward_code
+ */
+export interface ResolvedAddress {
+  ward: string | undefined
+  ward_code: number | undefined
+  city_province: string
+  province_code: number | undefined
+}
+
+export async function resolveVietnamAddress(
+  rawWard?: string | null,
+  rawCityProvince?: string | null
+): Promise<ResolvedAddress> {
+  const result: ResolvedAddress = {
+    ward: rawWard || undefined,
+    ward_code: undefined,
+    city_province: rawCityProvince || 'Thành phố Hồ Chí Minh',
+    province_code: undefined,
+  }
+
+  if (!rawCityProvince && !rawWard) return result
+
+  const cityInput = (rawCityProvince || '').trim()
+  let resolvedProvince: VietnamProvince | null = null
+  let resolvedDistrict: VietnamDistrict | null = null
+
+  // Step 1: Try matching as a province directly
+  if (cityInput) {
+    resolvedProvince = await findProvinceByName(cityInput)
+  }
+
+  // Step 2: If not a province, it's likely a district (e.g., "Quận 1", "Q.1")
+  // Search districts API to find it and derive the parent province
+  if (!resolvedProvince && cityInput) {
+    const isDistrictLike = /^(quận|huyện|thị xã|q\.|h\.)\s*/i.test(cityInput)
+      || /^(quận|huyện|thị xã|thành phố)\s+\d+/i.test(cityInput)
+      || /^\d+$/.test(cityInput) // bare number like "1" → likely "Quận 1"
+
+    if (isDistrictLike) {
+      // Try searching across all districts
+      const districtResults = await searchDistricts(cityInput)
+      if (districtResults.length > 0) {
+        resolvedDistrict = districtResults[0]
+        // Derive province from district's province_code
+        const provinces = await getProvinces()
+        resolvedProvince = provinces.find(p => p.code === resolvedDistrict!.province_code) || null
+      }
+    }
+
+    // If still no match, try common city aliases that might not be in findProvinceByName
+    if (!resolvedProvince) {
+      const lowerCity = cityInput.toLowerCase()
+      const cityAliases: Record<string, string> = {
+        'tp.hcm': 'Hồ Chí Minh',
+        'tp hcm': 'Hồ Chí Minh',
+        'tphcm': 'Hồ Chí Minh',
+        'sg': 'Hồ Chí Minh',
+        'saigon': 'Hồ Chí Minh',
+        'sài gòn': 'Hồ Chí Minh',
+        'hn': 'Hà Nội',
+        'ha noi': 'Hà Nội',
+        'hà nội': 'Hà Nội',
+        'đn': 'Đà Nẵng',
+        'da nang': 'Đà Nẵng',
+        'đà nẵng': 'Đà Nẵng',
+      }
+      const aliasMatch = cityAliases[lowerCity]
+      if (aliasMatch) {
+        resolvedProvince = await findProvinceByName(aliasMatch)
+      }
+    }
+  }
+
+  // Apply resolved province
+  if (resolvedProvince) {
+    result.city_province = resolvedProvince.name
+    result.province_code = resolvedProvince.code
+  }
+
+  // Step 3: Resolve ward
+  const wardInput = (rawWard || '').trim()
+  if (wardInput) {
+    if (resolvedDistrict) {
+      // We know the exact district — look up ward within it
+      const ward = await findWardByName(wardInput, resolvedDistrict.code)
+      if (ward) {
+        result.ward = ward.name
+        result.ward_code = ward.code
+      }
+    } else if (resolvedProvince) {
+      // We have the province but not the district — search wards and filter
+      const wardResults = await searchWards(wardInput)
+      if (wardResults.length > 0) {
+        // Find a ward whose district belongs to our resolved province
+        for (const w of wardResults) {
+          const districtOfWard = await getDistrictWithWards(w.district_code)
+          if (districtOfWard && districtOfWard.province_code === resolvedProvince.code) {
+            result.ward = w.name
+            result.ward_code = w.code
+            break
+          }
+        }
+        // If no match in our province, use the first result anyway (best effort)
+        if (!result.ward_code && wardResults.length > 0) {
+          result.ward = wardResults[0].name
+          result.ward_code = wardResults[0].code
+        }
+      }
+    }
+  }
+
+  return result
+}
+
+/**
  * Clear the cache (useful when switching contexts)
  */
 export function clearVietnamAddressCache(): void {

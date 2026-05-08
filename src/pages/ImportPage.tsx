@@ -36,6 +36,7 @@ import { extractProductFromFile, type ExtractedPDFData, type ExtractedProductDat
 import { extractImagesFromPDF, uploadImagesToStorage } from '@/lib/pdfImageExtractor'
 import { createProduct } from '@/lib/productProvider'
 import { findOrCreateProvider } from '@/lib/customerProvider'
+import { resolveVietnamAddress } from '@/lib/vietnamAddressService'
 import { useAuth } from '@/contexts/AuthContext'
 import type { CreateProductParams } from '@/types/product'
 
@@ -447,7 +448,19 @@ export default function ImportPage() {
       const provider = await findOrCreateProvider(providerName, user.id)
       console.log(`✅ Provider ready: ${provider.name} (${provider.id})`)
       
+      // Resolve address to canonical names + codes
+      const resolved = await resolveVietnamAddress(
+        product.location.ward,
+        product.location.city_province
+      )
+      console.log(`📍 Address resolved: "${product.location.ward}, ${product.location.city_province}" → "${resolved.ward}, ${resolved.city_province}"`)
+
       const params = convertToCreateParams(product, provider.id)
+      // Override with resolved canonical address values
+      params.ward = resolved.ward
+      params.ward_code = resolved.ward_code
+      params.city_province = resolved.city_province
+      params.province_code = resolved.province_code
       await createProduct(params)
 
       // Mark as imported

@@ -11,6 +11,7 @@ const __dirname = path.dirname(__filename);
 const TEMPLATE_SLIDE_ID =
   process.env.GOOGLE_SLIDES_TEMPLATE_ID ||
   "1XgYlc3oQdNfqnz0dar-J_JHLHINFUQfR56LfT4ys9J0";
+const GOOGLE_DRIVE_UPLOAD_FOLDER_ID = process.env.GOOGLE_DRIVE_UPLOAD_FOLDER_ID || null;
 
 // Placeholder image for products without photos
 // A simple grey image with "No Image" text, hosted on a reliable public CDN
@@ -37,6 +38,8 @@ const SCOPES = [
   'https://www.googleapis.com/auth/drive',
 ];
 
+let cachedDriveUploadParent = undefined;
+
 /**
  * Get authenticated Google API client using service account
  */
@@ -47,6 +50,28 @@ async function getAuthClient() {
     scopes: SCOPES,
   });
   return auth;
+}
+
+async function getDriveUploadParent(drive) {
+  if (cachedDriveUploadParent !== undefined) return cachedDriveUploadParent;
+  if (GOOGLE_DRIVE_UPLOAD_FOLDER_ID) {
+    cachedDriveUploadParent = GOOGLE_DRIVE_UPLOAD_FOLDER_ID;
+    return cachedDriveUploadParent;
+  }
+
+  try {
+    const file = await drive.files.get({
+      fileId: TEMPLATE_SLIDE_ID,
+      supportsAllDrives: true,
+      fields: 'parents',
+    });
+    cachedDriveUploadParent = file.data.parents?.[0] || null;
+  } catch (err) {
+    console.warn(`⚠️ Could not resolve Drive upload parent: ${err.message}`);
+    cachedDriveUploadParent = null;
+  }
+
+  return cachedDriveUploadParent;
 }
 
 /**
@@ -115,6 +140,10 @@ async function proxyImageToDrive(drive, imageUrl, { roundCorners = true } = {}) 
       name: `g2b-export-${Date.now()}-${Math.random().toString(36).substring(2, 6)}.${ext}`,
       mimeType: uploadMimeType,
     };
+    const parentFolderId = await getDriveUploadParent(drive);
+    if (parentFolderId) {
+      fileMetadata.parents = [parentFolderId];
+    }
 
     const media = {
       mimeType: uploadMimeType,
@@ -122,6 +151,7 @@ async function proxyImageToDrive(drive, imageUrl, { roundCorners = true } = {}) 
     };
 
     const driveFile = await drive.files.create({
+      supportsAllDrives: true,
       requestBody: fileMetadata,
       media,
       fields: 'id, webContentLink',
@@ -132,6 +162,7 @@ async function proxyImageToDrive(drive, imageUrl, { roundCorners = true } = {}) 
     // Make the file publicly readable
     await drive.permissions.create({
       fileId,
+      supportsAllDrives: true,
       requestBody: {
         role: 'reader',
         type: 'anyone',
@@ -335,6 +366,59 @@ function extractNumber(str) {
   return match ? match[0] : '0';
 }
 
+function extractSpotsPerDay(str) {
+  if (!str) return '0';
+  const normalized = String(str).replace(/,/g, '').replace(/\./g, '');
+  const dayMatch = normalized.match(/([\d]+(?:\.\d+)?)\s*(?:spots?|suất|lần)?\s*\/?\s*(?:day|ngày)/i);
+  if (dayMatch) return dayMatch[1];
+  return extractNumber(str);
+}
+
+function formatCurrencyValue(value, currency = 'VND') {
+  if (!value) return '';
+
+  const normalizedCurrency = String(currency || 'VND').toUpperCase();
+  const symbol = normalizedCurrency === 'VND' ? 'VNĐ' : normalizedCurrency;
+  const formattedNumber = Number(value).toLocaleString('vi-VN');
+
+  return normalizedCurrency === 'VND'
+    ? `${formattedNumber} ${symbol}`
+    : `${symbol} ${formattedNumber}`;
+}
+
+function formatMediaType(type) {
+  const labels = {
+    led: 'LED screens',
+    digital: 'Digital screens',
+    billboard: 'Billboard',
+    transit: 'Transit media',
+    poster: 'Poster',
+    banner: 'Banner',
+    other: 'OOH media',
+  };
+
+  return labels[type] || '';
+}
+
+async function keepOnlyProductTemplateSlide(slides, presentationId) {
+  const presentation = await slides.presentations.get({ presentationId });
+  const allSlides = presentation.data.slides || [];
+  const productSlide = allSlides[0];
+  const sampleSlideIds = allSlides.slice(1).map(slide => slide.objectId).filter(Boolean);
+
+  if (sampleSlideIds.length > 0) {
+    await slides.presentations.batchUpdate({
+      presentationId,
+      requestBody: {
+        requests: sampleSlideIds.map(objectId => ({ deleteObject: { objectId } })),
+      },
+    });
+    console.log(`Removed ${sampleSlideIds.length} sample/reference slide(s) from export`);
+  }
+
+  return productSlide?.objectId;
+}
+
 /**
  * Translate common Vietnamese terms to English for PPT export
  */
@@ -420,17 +504,15 @@ function buildPlaceholderMap(product) {
   
   // Format cost
   const currency = product.currency || 'VND';
-  const costFormatted = product.cost 
-    ? `${currency} ${Number(product.cost).toLocaleString('en-US')}` 
-    : '';
+  const costFormatted = formatCurrencyValue(product.cost, currency);
   
   // Translate booking_duration to English (use actual data, no hardcoded default)
   const bookingDurationEn = translateToEnglish(product.booking_duration || '');
 
   // Format cost with period
-  const costWithPeriod = costFormatted 
+  const costWithPeriod = costFormatted && bookingDurationEn
     ? `${costFormatted} / ${bookingDurationEn}` 
-    : '';
+    : costFormatted;
 
   // Format GPS
   const gps = product.gps_coordinates 
@@ -438,24 +520,20 @@ function buildPlaceholderMap(product) {
 
   // Format video duration
   const videoDuration = attrs.video_duration 
-    ? `${attrs.video_duration || 0}s duration` 
+    ? `${attrs.video_duration}s` 
     : '';
 
   // Format frequency with time
-  const frequencyFull = attrs.frequency 
-    ? `${attrs.frequency} spots/day,\n${operaTime}` 
-    : '';
+  const frequencyFull = [attrs.frequency || '', operaTime].filter(Boolean).join(',\n');
 
   // Format type/format
-  const formatLabel = product.type 
-    ? product.type.charAt(0).toUpperCase() + product.type.slice(1) + ' screens' 
-    : '';
+  const formatLabel = formatMediaType(product.type);
 
-  // LED count  
-  const ledCount = attrs.quantity_of_ad || '';
+  const ledCount = attrs.quantity_of_ad || attrs.add_side || '';
+  const unitCount = ledCount ? String(ledCount).padStart(2, '0') : '';
+  const quantityFaces = ledCount ? `${ledCount} face` : '';
 
-  // Traffic - truncate to 3 chars for slide layout
-  const traffic = product.traffic ? String(product.traffic).slice(0, 3) : '';
+  const traffic = product.traffic ? String(product.traffic).trim().split('/')[0] : '';
 
   // Local tax
   const localTax = product.local_tax 
@@ -471,13 +549,15 @@ function buildPlaceholderMap(product) {
   const minBookingFromNote = minBookingMatch ? translateToEnglish(minBookingMatch[1].trim()) : '';
   // Visibility = note text WITHOUT the "Minimum Booking" part
   const noteWithoutBooking = rawNote.replace(/Minimum\s*Booking[:\s]*.*/i, '').trim();
-  const visibility = translateToEnglish(noteWithoutBooking);
+  const visibility = translateToEnglish(noteWithoutBooking) || 'Good and head on advertisement';
 
   // Booking minimum: prefer value from note, fallback to booking_duration
   const bookingMinimum = minBookingFromNote || bookingDurationEn;
 
   // Description - max 200 chars (translated to English)
-  const description = translateToEnglish((product.description || '').slice(0, 200));
+  const descriptionSource = product.description
+    || [product.product_name, product.landmark, product.location_address].filter(Boolean).join('. ');
+  const description = translateToEnglish(descriptionSource.slice(0, 220));
 
   // City province (translated to English)
   const cityProvince = translateToEnglish(product.city_province || '');
@@ -492,13 +572,15 @@ function buildPlaceholderMap(product) {
   const bookingDuration = bookingDurationEn;
 
   // Spots per day - extract only number from frequency
-  const spotsDay = extractNumber(attrs.frequency);
+  const spotsDay = extractSpotsPerDay(attrs.frequency);
 
   const map = {
     // Double-brace format {{key}}
     '{{product_name}}': productName,
     '{{product_code}}': product.product_code || '',
     '{{led_count}}': String(ledCount),
+    '{{unit_count}}': unitCount,
+    '{{quantity_faces}}': quantityFaces,
     '{{traffic}}': traffic,
     '{{frequency}}': frequencyFull,
     '{{spots_day}}': spotsDay,
@@ -536,9 +618,10 @@ function buildPlaceholderMap(product) {
     '{attributes.pixel_height}': attrs.pixel_height ? String(attrs.pixel_height) : '',
     '{attributes.quantity_of_ad}': String(ledCount),
     '{quantity of ad face}': String(ledCount),
+    '{quantity_faces}': quantityFaces,
     '{frequency}': spotsDay,
     '{traffic}': traffic,
-    '{cost}': costFormatted,
+    '{cost}': costWithPeriod,
     '{booking_duration}': bookingDuration || '',
     '{description}': description,
     '{landmark}': landmark,
@@ -584,6 +667,11 @@ export async function exportProductToSlides(product) {
   const newPresentationId = copyResponse.data.id;
   console.log(`Created presentation copy: ${newPresentationId}`);
 
+  const slideId = await keepOnlyProductTemplateSlide(slides, newPresentationId);
+  if (!slideId) {
+    throw new Error('Template does not contain a product slide');
+  }
+
   // 2. Build placeholder replacements
   const placeholderMap = buildPlaceholderMap(product);
 
@@ -617,14 +705,8 @@ export async function exportProductToSlides(product) {
     ? primaryUrls
     : [PLACEHOLDER_IMAGE_URL, PLACEHOLDER_IMAGE_URL];
 
-  {
-    const presentation = await slides.presentations.get({ presentationId: newPresentationId });
-    const slide = presentation.data.slides[0];
-    const slideId = slide.objectId;
-
-    const insertTempIds = await insertImagesOnSlide(slides, drive, newPresentationId, slideId, imagesToUse);
-    tempFileIds.push(...insertTempIds);
-  }
+  const insertTempIds = await insertImagesOnSlide(slides, drive, newPresentationId, slideId, imagesToUse);
+  tempFileIds.push(...insertTempIds);
 
   // 6. Make the file accessible (anyone with link can view)
   await drive.permissions.create({
@@ -639,9 +721,10 @@ export async function exportProductToSlides(product) {
   // 7. Delayed cleanup — give Google time to fully embed images before deleting source files
   if (tempFileIds.length > 0) {
     console.log(`Scheduling cleanup of ${tempFileIds.length} temp Drive files in 60 s...`);
-    setTimeout(() => {
+    const cleanupTimer = setTimeout(() => {
       cleanupDriveFiles(drive, tempFileIds).catch(() => {});
     }, 60000);
+    cleanupTimer.unref?.();
   }
 
   const slideUrl = `https://docs.google.com/presentation/d/${newPresentationId}/edit`;
@@ -659,7 +742,7 @@ export async function exportProductToSlides(product) {
  * Export multiple products - one slide per product
  * Creates a single presentation with multiple slides.
  *
- * Key fix: duplicate all slides BEFORE any text replacement so that every
+ * Key fix: duplicate the product template slide BEFORE any text replacement so that every
  * copy still contains the original {{placeholder}} tokens.
  */
 export async function exportMultipleProductsToSlides(products) {
@@ -686,10 +769,13 @@ export async function exportMultipleProductsToSlides(products) {
   const presentationId = copyResponse.data.id;
   console.log(`Created presentation copy: ${presentationId}`);
 
-  // 2. Read the initial (clean) slides
-  const initialPres = await slides.presentations.get({ presentationId });
-  const originalSlideIds = (initialPres.data.slides || []).map(s => s.objectId);
-  console.log(`Template has ${originalSlideIds.length} slide(s)`);
+  // 2. Keep only the first slide as the clean product template.
+  const productTemplateSlideId = await keepOnlyProductTemplateSlide(slides, presentationId);
+  if (!productTemplateSlideId) {
+    throw new Error('Template does not contain a product slide');
+  }
+  const originalSlideIds = [productTemplateSlideId];
+  console.log(`Using product template slide: ${productTemplateSlideId}`);
 
   // 3. Duplicate those clean slides N-1 times BEFORE any text replacement
   //    so every duplicate still contains the original placeholder tokens.
@@ -773,9 +859,10 @@ export async function exportMultipleProductsToSlides(products) {
   // 7. Delayed cleanup — give Google time to fully embed images before deleting source files
   if (allTempFileIds.length > 0) {
     console.log(`Scheduling cleanup of ${allTempFileIds.length} temp Drive files in 60 s...`);
-    setTimeout(() => {
+    const cleanupTimer = setTimeout(() => {
       cleanupDriveFiles(drive, allTempFileIds).catch(() => {});
     }, 60000);
+    cleanupTimer.unref?.();
   }
 
   const slideUrl = `https://docs.google.com/presentation/d/${presentationId}/edit`;
@@ -811,6 +898,32 @@ export async function downloadPresentationAsPptx(presentationId) {
   const response = await drive.files.export({
     fileId: presentationId,
     mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  }, {
+    responseType: 'stream',
+  });
+
+  return { stream: response.data, fileName };
+}
+
+/**
+ * Download a presentation as PDF binary using Drive API export
+ * Returns a readable stream
+ */
+export async function downloadPresentationAsPdf(presentationId) {
+  const auth = await getAuthClient();
+  const drive = google.drive({ version: 'v3', auth });
+
+  const fileMeta = await drive.files.get({
+    fileId: presentationId,
+    supportsAllDrives: true,
+    fields: 'name',
+  });
+
+  const fileName = fileMeta.data.name || 'export';
+
+  const response = await drive.files.export({
+    fileId: presentationId,
+    mimeType: 'application/pdf',
   }, {
     responseType: 'stream',
   });

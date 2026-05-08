@@ -61,11 +61,15 @@ function getTypeLabel(type: string): string {
   return labels[type] || type
 }
 
-export async function exportProductsToExcel(
+/**
+ * Internal: builds the Excel workbook and returns buffer.
+ * Used by both generateExcelBuffer() and exportProductsToExcel().
+ */
+async function buildExcelWorkbook(
   products: ProductWithRelations[],
   meta?: Partial<MetaData>,
   logoUrl?: string,
-) {
+): Promise<ArrayBuffer> {
   const metaData = { ...defaultMeta, ...meta }
   const workbook = new ExcelJS.Workbook()
   const worksheet = workbook.addWorksheet(
@@ -316,8 +320,32 @@ export async function exportProductsToExcel(
 
   worksheet.views = [{ showGridLines: false }]
 
-  // -- Export --
+  // -- Generate buffer --
   const buffer = await workbook.xlsx.writeBuffer()
+  return buffer as ArrayBuffer
+}
+
+/**
+ * Generate Excel workbook buffer without triggering browser download.
+ * Use this when you need to upload the file to storage.
+ */
+export async function generateExcelBuffer(
+  products: ProductWithRelations[],
+  meta?: Partial<MetaData>,
+  logoUrl?: string,
+): Promise<ArrayBuffer> {
+  return buildExcelWorkbook(products, meta, logoUrl)
+}
+
+/**
+ * Export products to Excel and trigger browser download
+ */
+export async function exportProductsToExcel(
+  products: ProductWithRelations[],
+  meta?: Partial<MetaData>,
+  logoUrl?: string,
+) {
+  const buffer = await buildExcelWorkbook(products, meta, logoUrl)
   const blob = new Blob([buffer], {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   })

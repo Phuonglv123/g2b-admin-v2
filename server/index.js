@@ -6,12 +6,12 @@ import dotenv from 'dotenv';
 import sharp from 'sharp';
 import pdfParse from 'pdf-parse';
 import { createClient } from '@supabase/supabase-js';
-import { exportProductToSlides, exportMultipleProductsToSlides, downloadPresentationAsPptx, inspectTemplate } from './slidesExporter.js';
+import { exportProductToSlides, exportMultipleProductsToSlides, downloadPresentationAsPptx, downloadPresentationAsPdf, inspectTemplate } from './slidesExporter.js';
 
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3009;
 
 // Initialize Supabase client for feedback storage
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -35,6 +35,10 @@ const upload = multer({
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
+
+// RAG/Embedding config
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const OPENAI_EMBEDDING_MODEL = process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small';
 
 // Middleware
 app.use(cors({
@@ -455,6 +459,221 @@ Bạn là AI trợ lý tìm kiếm sản phẩm quảng cáo ngoài trời (OOH)
 - search_summary nên mô tả kết quả một cách tự nhiên, dễ hiểu
 `;
 
+const RAG_SYSTEM_PROMPT = `
+Bạn là AI trợ lý tìm kiếm sản phẩm quảng cáo ngoài trời (OOH).
+Bạn được cung cấp:
+1) Query người dùng
+2) Danh sách sản phẩm ứng viên đã được truy hồi từ knowledge base (RAG)
+3) Context chunks (trích đoạn nội dung nguồn)
+
+Nhiệm vụ:
+- Ưu tiên sản phẩm ứng viên theo mức độ phù hợp thực tế với query.
+- Dựa vào context chunks để giải thích ngắn gọn vì sao phù hợp.
+- Không bịa dữ liệu ngoài context và danh sách sản phẩm.
+
+Trả về JSON đúng schema:
+{
+  "query_analysis": {
+    "product_type": "...",
+    "location_keywords": ["..."],
+    "area_district": "...",
+    "additional_requirements": "..."
+  },
+  "recommendations": [
+    {
+      "product_id": "...",
+      "product_name": "...",
+      "product_code": "...",
+      "match_score": 0.0,
+      "match_reason": "...",
+      "location_match": true,
+      "type_match": true
+    }
+  ],
+  "search_summary": "..."
+}
+`;
+
+function isRagEnabled() {
+  return Boolean(supabase && OPENAI_API_KEY);
+}
+
+function detectProductTypeFromQuery(query = '') {
+  const q = query.toLowerCase();
+  if (q.includes('billboard') || q.includes('biển tĩnh')) return 'billboard';
+  if (q.includes('led')) return 'led';
+  if (q.includes('digital') || q.includes('màn hình')) return 'digital';
+  if (q.includes('transit') || q.includes('xe buýt') || q.includes('taxi')) return 'transit';
+  if (q.includes('poster')) return 'poster';
+  if (q.includes('banner')) return 'banner';
+  return null;
+}
+
+function detectLocationKeywordFromQuery(query = '') {
+  // Basic heuristic: capture known district/city-like phrases
+  // Example: "quận 1", "phú nhuận", "tân bình", "hà nội"
+  const q = query.toLowerCase();
+  const districtMatch = q.match(/quận\s*\d+/i);
+  if (districtMatch) return districtMatch[0];
+
+  const commonPlaces = [
+    'phú nhuận', 'tân bình', 'quận 1', 'quận 3', 'quận 7', 'thủ đức',
+    'bình thạnh', 'gò vấp', 'ho chi minh', 'hồ chí minh', 'hcm', 'hà nội', 'đà nẵng'
+  ];
+
+  for (const place of commonPlaces) {
+    if (q.includes(place)) return place;
+  }
+
+  return null;
+}
+
+function buildRagChunksFromProduct(product) {
+  const safe = (v) => (v ?? '').toString().trim();
+  const dims = `${safe(product?.attributes?.width)}m x ${safe(product?.attributes?.height)}m`;
+
+  const overview = [
+    `Tên sản phẩm: ${safe(product.product_name)}`,
+    `Mã sản phẩm: ${safe(product.product_code)}`,
+    `Loại: ${safe(product.type)}`,
+    `Nhà cung cấp: ${safe(product.provider_name)}`,
+    `Địa chỉ: ${safe(product.location_address)}`,
+    `Phường: ${safe(product.ward)}`,
+    `Thành phố/Tỉnh: ${safe(product.city_province)}`,
+    `Landmark: ${safe(product.landmark)}`,
+  ].join('\n');
+
+  const pricing = [
+    `Tên sản phẩm: ${safe(product.product_name)}`,
+    `Giá thuê: ${safe(product.cost)} ${safe(product.currency)}`,
+    `Thời hạn thuê: ${safe(product.booking_duration)}`,
+    `Phí sản xuất: ${safe(product.production_cost)}`,
+    `Traffic: ${safe(product.traffic)}`,
+    `Local tax: ${safe(product.local_tax)}`,
+  ].join('\n');
+
+  const specs = [
+    `Tên sản phẩm: ${safe(product.product_name)}`,
+    `Kích thước: ${dims}`,
+    `Resolution: ${safe(product?.attributes?.pixel_width)} x ${safe(product?.attributes?.pixel_height)}`,
+    `Operating hours: ${safe(product?.attributes?.opera_time_from)} - ${safe(product?.attributes?.opera_time_to)}`,
+    `Lighting: ${safe(product?.attributes?.lighting)}`,
+    `Material: ${safe(product?.attributes?.material)}`,
+    `Mô tả: ${safe(product.description)}`,
+  ].join('\n');
+
+  const location = [
+    `Tên sản phẩm: ${safe(product.product_name)}`,
+    `Địa điểm hiển thị: ${safe(product.location_name)}`,
+    `Số nhà: ${safe(product.street_number)}`,
+    `Tên đường: ${safe(product.street_name)}`,
+    `Phường/Xã: ${safe(product.ward)}`,
+    `Thành phố/Tỉnh: ${safe(product.city_province)}`,
+    `GPS: ${safe(product.gps_coordinates)}`,
+    `Landmark: ${safe(product.landmark)}`,
+  ].join('\n');
+
+  return [
+    { chunk_type: 'overview', content: overview },
+    { chunk_type: 'pricing', content: pricing },
+    { chunk_type: 'spec', content: specs },
+    { chunk_type: 'location', content: location },
+  ];
+}
+
+async function getTextEmbedding(text) {
+  if (!OPENAI_API_KEY) {
+    throw new Error('OPENAI_API_KEY is not configured');
+  }
+
+  const response = await fetch('https://api.openai.com/v1/embeddings', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: OPENAI_EMBEDDING_MODEL,
+      input: text,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Embedding API error (${response.status}): ${errorText}`);
+  }
+
+  const data = await response.json();
+  const embedding = data?.data?.[0]?.embedding;
+
+  if (!Array.isArray(embedding)) {
+    throw new Error('Embedding API returned invalid embedding payload');
+  }
+
+  return embedding;
+}
+
+async function indexProductsToRag(products = []) {
+  if (!isRagEnabled()) {
+    return { indexedChunks: 0, skipped: true, reason: 'RAG not configured' };
+  }
+
+  const validProducts = products.filter((p) => p?.id);
+  if (validProducts.length === 0) {
+    return { indexedChunks: 0, skipped: true, reason: 'No products to index' };
+  }
+
+  const productIds = [...new Set(validProducts.map((p) => p.id))];
+
+  const { error: deleteError } = await supabase
+    .from('rag_document_chunks')
+    .delete()
+    .in('product_id', productIds);
+
+  if (deleteError) {
+    throw new Error(`Failed to clear existing chunks: ${deleteError.message}`);
+  }
+
+  const rows = [];
+
+  for (const product of validProducts) {
+    const chunks = buildRagChunksFromProduct(product);
+
+    for (const chunk of chunks) {
+      const embedding = await getTextEmbedding(chunk.content.slice(0, 8000));
+      rows.push({
+        product_id: product.id,
+        provider_id: product.provider_id || null,
+        provider_name: product.provider_name || null,
+        product_name: product.product_name || null,
+        product_code: product.product_code || null,
+        city_province: product.city_province || null,
+        ward: product.ward || null,
+        type: product.type || null,
+        chunk_type: chunk.chunk_type,
+        content: chunk.content,
+        metadata: {
+          currency: product.currency || null,
+          booking_duration: product.booking_duration || null,
+        },
+        embedding,
+      });
+    }
+  }
+
+  if (rows.length > 0) {
+    const { error: insertError } = await supabase
+      .from('rag_document_chunks')
+      .insert(rows);
+
+    if (insertError) {
+      throw new Error(`Failed to insert chunks: ${insertError.message}`);
+    }
+  }
+
+  return { indexedChunks: rows.length, skipped: false };
+}
+
 /**
  * Convert image to base64 with optimization
  */
@@ -628,7 +847,7 @@ app.post('/api/extract', upload.single('file'), async (req, res) => {
     console.log(`Processing file: ${originalname}, type: ${mimetype}, size: ${buffer.length} bytes`);
 
     let content = [];
-    let uploadedFileId = null; // Track Files API upload for cleanup
+    // Files API disabled — using base64 for all uploads
     
     // Max file size for Claude API document type (~25MB raw → ~33MB base64, under 32MB request limit with overhead)
     const MAX_PDF_SIZE = 25 * 1024 * 1024; // 25MB (increased from 15MB)
@@ -636,20 +855,16 @@ app.post('/api/extract', upload.single('file'), async (req, res) => {
     const MAX_FILES_API_SIZE = 500 * 1024 * 1024;
 
     if (mimetype === 'application/pdf') {
-      // Strategy 0: Try Files API first (upload once, reuse across Pass 1/2/3)
-      // Benefits: no base64 overhead, reusable across passes, handles up to 500MB
-      if (buffer.length <= MAX_FILES_API_SIZE) {
-        uploadedFileId = await uploadToFilesAPI(buffer, originalname, mimetype);
-      }
-      
-      if (uploadedFileId) {
-        // Files API upload succeeded - use file_id reference (no base64 needed)
+      // Use base64 for PDFs under the size limit, fallback strategies for larger files
+      if (buffer.length <= MAX_PDF_SIZE) {
+        const base64Data = buffer.toString('base64');
         content = [
           {
             type: 'document',
             source: {
-              type: 'file',
-              file_id: uploadedFileId
+              type: 'base64',
+              media_type: 'application/pdf',
+              data: base64Data
             }
           }
         ];
@@ -683,47 +898,20 @@ app.post('/api/extract', upload.single('file'), async (req, res) => {
             });
           }
         }
-      } else {
-        // Files API failed but PDF is small enough for base64
-        const base64Data = buffer.toString('base64');
-        content = [
-          {
-            type: 'document',
-            source: {
-              type: 'base64',
-              media_type: 'application/pdf',
-              data: base64Data
-            }
-          }
-        ];
       }
     } else if (mimetype.startsWith('image/')) {
-      // For images: try Files API, fall back to base64
-      uploadedFileId = await uploadToFilesAPI(buffer, originalname, mimetype);
-      
-      if (uploadedFileId) {
-        content = [
-          {
-            type: 'image',
-            source: {
-              type: 'file',
-              file_id: uploadedFileId
-            }
+      // For images: use base64 directly
+      const processed = await processImage(buffer, mimetype);
+      content = [
+        {
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: processed.mimeType,
+            data: processed.data
           }
-        ];
-      } else {
-        const processed = await processImage(buffer, mimetype);
-        content = [
-          {
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: processed.mimeType,
-              data: processed.data
-            }
-          }
-        ];
-      }
+        }
+      ];
     } else {
       return res.status(400).json({ 
         success: false, 
@@ -950,21 +1138,12 @@ Thêm confidence scores nếu chưa có.`;
       try {
         console.log('📑 PASS 3: Citation verification starting...');
         
-        // Build citation document block - reuse file_id if available (saves re-uploading)
-        let citationDocBlock;
-        if (uploadedFileId) {
-          citationDocBlock = {
-            type: 'document',
-            source: { type: 'file', file_id: uploadedFileId },
-            citations: { enabled: true }
-          };
-        } else {
-          const pdfBlock = content.find(block => block.type === 'document');
-          citationDocBlock = {
-            ...pdfBlock,
-            citations: { enabled: true }
-          };
-        }
+        // Build citation document block from the base64 PDF content
+        const pdfBlock = content.find(block => block.type === 'document');
+        const citationDocBlock = {
+          ...pdfBlock,
+          citations: { enabled: true }
+        };
         
         const citationPrompt = `Hãy xác nhận từng sản phẩm sau được trích xuất từ TRANG nào trong PDF. 
 Với mỗi sản phẩm, trích dẫn đoạn text gốc trong PDF chứa thông tin chính (tên, địa chỉ, giá).
@@ -1056,23 +1235,12 @@ Trả lời ngắn gọn, chỉ cần nêu: Sản phẩm X → Trang Y, kèm tr�
         hasProviderTemplate: !!providerTemplate,
         pass2Corrected: extractedData._pass2_corrected || false,
         hasCitations: !!citations,
-        usedFilesAPI: !!uploadedFileId
+        usedFilesAPI: false
       }
     });
 
-    // Cleanup: delete the uploaded file from Files API (best-effort, non-blocking)
-    if (uploadedFileId) {
-      deleteFromFilesAPI(uploadedFileId).catch(() => {});
-    }
-
   } catch (error) {
     console.error('Extraction error:', error);
-    
-    // Cleanup on error too
-    if (typeof uploadedFileId !== 'undefined' && uploadedFileId) {
-      deleteFromFilesAPI(uploadedFileId).catch(() => {});
-    }
-    
     res.status(500).json({
       success: false,
       error: error.message || 'Unknown error during extraction'
@@ -1289,6 +1457,220 @@ app.get('/api/inspect-template', async (req, res) => {
 });
 
 // =============================================
+// EXPORT AND UPLOAD TO SUPABASE STORAGE
+// =============================================
+
+/**
+ * Generate PPT + PDF from products, upload to Supabase Storage
+ * Returns public URLs for the uploaded files
+ */
+app.post('/api/export-and-upload', express.json({ limit: '50mb' }), async (req, res) => {
+  try {
+    const { products, providerName } = req.body;
+
+    if (!products || !Array.isArray(products) || products.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Products array is required'
+      });
+    }
+
+    if (!supabase) {
+      return res.status(503).json({
+        success: false,
+        error: 'Supabase not configured - cannot upload files'
+      });
+    }
+
+    const sanitizedProvider = (providerName || 'unknown')
+      .replace(/[^a-zA-Z0-9\u00C0-\u024F\u1E00-\u1EFF -]/g, '_')
+      .substring(0, 50);
+    const timestamp = Date.now();
+    const folderPath = `exports/${sanitizedProvider}/${timestamp}`;
+
+    console.log(`📦 Export & Upload: ${products.length} products → ${folderPath}`);
+
+    const result = { pptxUrl: null, pdfUrl: null, slideUrl: null, errors: [] };
+
+    // Step 1: Generate Google Slides presentation
+    let presentationId = null;
+    try {
+      console.log('📊 Generating Google Slides presentation...');
+      const slidesResult = products.length === 1
+        ? await exportProductToSlides(products[0])
+        : await exportMultipleProductsToSlides(products);
+
+      presentationId = slidesResult.presentationId;
+      result.slideUrl = slidesResult.slideUrl;
+      console.log(`✅ Slides created: ${presentationId}`);
+    } catch (slidesError) {
+      console.error('❌ Slides generation failed:', slidesError.message);
+      result.errors.push(`Slides: ${slidesError.message}`);
+    }
+
+    // Step 2: Download PPTX and upload to Supabase
+    if (presentationId) {
+      // Wait a bit for Google to finish processing images
+      await new Promise(resolve => setTimeout(resolve, 3000));
+
+      try {
+        console.log('📥 Downloading PPTX...');
+        const { stream: pptxStream, fileName } = await downloadPresentationAsPptx(presentationId);
+
+        // Buffer the stream
+        const chunks = [];
+        for await (const chunk of pptxStream) {
+          chunks.push(chunk);
+        }
+        const pptxBuffer = Buffer.concat(chunks);
+
+        // Upload to Supabase
+        const pptxPath = `${folderPath}/${fileName}.pptx`;
+        const { error: pptxUploadError } = await supabase.storage
+          .from('g2b')
+          .upload(pptxPath, pptxBuffer, {
+            contentType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            cacheControl: '3600',
+            upsert: true,
+          });
+
+        if (pptxUploadError) {
+          throw pptxUploadError;
+        }
+
+        const { data: pptxUrlData } = supabase.storage
+          .from('g2b')
+          .getPublicUrl(pptxPath);
+        result.pptxUrl = pptxUrlData?.publicUrl || null;
+        console.log(`✅ PPTX uploaded: ${result.pptxUrl}`);
+      } catch (pptxError) {
+        console.error('❌ PPTX download/upload failed:', pptxError.message);
+        result.errors.push(`PPTX: ${pptxError.message}`);
+      }
+
+      // Step 3: Download PDF and upload to Supabase
+      try {
+        console.log('📥 Downloading PDF...');
+        const { stream: pdfStream, fileName } = await downloadPresentationAsPdf(presentationId);
+
+        const chunks = [];
+        for await (const chunk of pdfStream) {
+          chunks.push(chunk);
+        }
+        const pdfBuffer = Buffer.concat(chunks);
+
+        const pdfPath = `${folderPath}/${fileName}.pdf`;
+        const { error: pdfUploadError } = await supabase.storage
+          .from('g2b')
+          .upload(pdfPath, pdfBuffer, {
+            contentType: 'application/pdf',
+            cacheControl: '3600',
+            upsert: true,
+          });
+
+        if (pdfUploadError) {
+          throw pdfUploadError;
+        }
+
+        const { data: pdfUrlData } = supabase.storage
+          .from('g2b')
+          .getPublicUrl(pdfPath);
+        result.pdfUrl = pdfUrlData?.publicUrl || null;
+        console.log(`✅ PDF uploaded: ${result.pdfUrl}`);
+      } catch (pdfError) {
+        console.error('❌ PDF download/upload failed:', pdfError.message);
+        result.errors.push(`PDF: ${pdfError.message}`);
+      }
+    }
+
+    const hasAnyFile = result.pptxUrl || result.pdfUrl;
+
+    res.json({
+      success: hasAnyFile,
+      data: result,
+    });
+
+  } catch (error) {
+    console.error('Export & Upload error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Unknown error during export and upload',
+    });
+  }
+});
+
+/**
+ * Index products to RAG vector store
+ */
+app.post('/api/rag-index-products', express.json({ limit: '50mb' }), async (req, res) => {
+  try {
+    const { products } = req.body;
+
+    if (!Array.isArray(products) || products.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Products array is required'
+      });
+    }
+
+    const result = await indexProductsToRag(products);
+
+    return res.json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    console.error('RAG index error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to index RAG chunks',
+    });
+  }
+});
+
+/**
+ * Delete products from RAG vector store
+ */
+app.post('/api/rag-delete-products', express.json({ limit: '10mb' }), async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(503).json({
+        success: false,
+        error: 'Supabase not configured',
+      });
+    }
+
+    const { productIds } = req.body;
+    if (!Array.isArray(productIds) || productIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'productIds array is required',
+      });
+    }
+
+    const { error } = await supabase
+      .from('rag_document_chunks')
+      .delete()
+      .in('product_id', productIds);
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    return res.json({
+      success: true,
+      data: { deletedProductIds: productIds.length },
+    });
+  } catch (error) {
+    console.error('RAG delete error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to delete RAG chunks',
+    });
+  }
+});
+
+// =============================================
 // FEEDBACK & LEARNING ENDPOINTS
 // =============================================
 
@@ -1468,11 +1850,14 @@ app.listen(PORT, () => {
   console.log(`📍 Health check: http://localhost:${PORT}/health`);
   console.log(`📤 Extract endpoint: POST http://localhost:${PORT}/api/extract`);
   console.log(`🔍 AI Search endpoint: POST http://localhost:${PORT}/api/ai-search`);
+  console.log(`🧠 RAG index endpoint: POST http://localhost:${PORT}/api/rag-index-products`);
+  console.log(`🧹 RAG delete endpoint: POST http://localhost:${PORT}/api/rag-delete-products`);
   console.log(`📊 Export Slides: POST http://localhost:${PORT}/api/export-slides`);
   console.log(`📊 Batch Export: POST http://localhost:${PORT}/api/export-slides-batch`);
   console.log(`🔧 Inspect Template: GET http://localhost:${PORT}/api/inspect-template`);
   console.log(`📝 Feedback: POST http://localhost:${PORT}/api/extraction-feedback`);
   console.log(`📈 Stats: GET http://localhost:${PORT}/api/extraction-stats`);
+  console.log(`🧠 RAG status: ${isRagEnabled() ? 'enabled' : 'disabled (missing OPENAI_API_KEY or Supabase service role)'}`);
 });
 
 /**
@@ -1498,8 +1883,59 @@ app.post('/api/ai-search', express.json(), async (req, res) => {
 
     console.log(`🔍 AI Search request: "${query}" among ${products.length} products`);
 
+    let ragCandidates = null;
+    let ragChunks = [];
+
+    if (isRagEnabled()) {
+      try {
+        const queryEmbedding = await getTextEmbedding(query);
+        const inferredType = detectProductTypeFromQuery(query);
+        const inferredLocation = detectLocationKeywordFromQuery(query);
+
+        const { data: chunkMatches, error: ragError } = await supabase.rpc('match_rag_chunks', {
+          query_embedding: queryEmbedding,
+          keyword_query: query,
+          match_count: 30,
+          min_similarity: 0.58,
+          filter_city: inferredLocation ? `%${inferredLocation}%` : null,
+          filter_type: inferredType,
+          filter_provider: null,
+        });
+
+        if (ragError) {
+          throw new Error(ragError.message);
+        }
+
+        if (Array.isArray(chunkMatches) && chunkMatches.length > 0) {
+          ragChunks = chunkMatches;
+
+          const scoreByProduct = new Map();
+          for (const row of chunkMatches) {
+            const current = scoreByProduct.get(row.product_id) || 0;
+            scoreByProduct.set(row.product_id, Math.max(current, row.hybrid_score || row.similarity || 0));
+          }
+
+          const sortedProductIds = [...scoreByProduct.entries()]
+            .sort((a, b) => b[1] - a[1])
+            .map(([productId]) => productId)
+            .slice(0, 15);
+
+          ragCandidates = products.filter((p) => sortedProductIds.includes(p.id));
+          ragCandidates.sort((a, b) => sortedProductIds.indexOf(a.id) - sortedProductIds.indexOf(b.id));
+
+          console.log(`🧠 RAG retrieved ${ragChunks.length} chunks, ${ragCandidates.length} candidate products`);
+        }
+      } catch (ragError) {
+        console.warn(`⚠️ RAG retrieval failed, fallback to classic search: ${ragError.message}`);
+      }
+    }
+
+    const productsForPrompt = Array.isArray(ragCandidates) && ragCandidates.length > 0
+      ? ragCandidates
+      : products;
+
     // Format products for the prompt
-    const productsListStr = products.map((p, i) => {
+    const productsListStr = productsForPrompt.map((p, i) => {
       return `${i + 1}. ID: ${p.id}
    Tên: ${p.product_name}
    Mã: ${p.product_code}
@@ -1511,10 +1947,25 @@ app.post('/api/ai-search', express.json(), async (req, res) => {
    Giá: ${p.cost} ${p.currency}`;
     }).join('\n\n');
 
-    // Build prompt
-    const searchPrompt = AI_SEARCH_PROMPT
-      .replace('{USER_QUERY}', query)
-      .replace('{PRODUCTS_LIST}', productsListStr);
+    const contextChunkText = ragChunks
+      .slice(0, 20)
+      .map((c, i) => {
+        return `#${i + 1} [${c.chunk_type}] product_id=${c.product_id} similarity=${Number(c.similarity || 0).toFixed(3)}\n${c.content}`;
+      })
+      .join('\n\n');
+
+    // Build prompt (RAG-first, fallback-safe)
+    const searchPrompt = (ragChunks.length > 0
+      ? [
+          `Query người dùng:\n${query}`,
+          `\nDanh sách sản phẩm ứng viên (đã retrieve):\n${productsListStr}`,
+          `\nContext chunks (RAG):\n${contextChunkText}`,
+          `\nHãy trả về JSON đúng schema yêu cầu.`
+        ].join('\n')
+      : AI_SEARCH_PROMPT
+          .replace('{USER_QUERY}', query)
+          .replace('{PRODUCTS_LIST}', productsListStr)
+    );
 
     // Call Claude API
     let message;
@@ -1528,6 +1979,7 @@ app.post('/api/ai-search', express.json(), async (req, res) => {
         message = await anthropic.messages.create({
           model: 'claude-sonnet-4-6',
           max_tokens: 4096,
+          ...(ragChunks.length > 0 ? { system: RAG_SYSTEM_PROMPT } : {}),
           messages: [
             {
               role: 'user',
@@ -1583,7 +2035,12 @@ app.post('/api/ai-search', express.json(), async (req, res) => {
       usage: {
         inputTokens: message.usage.input_tokens,
         outputTokens: message.usage.output_tokens
-      }
+      },
+      meta: {
+        ragUsed: ragChunks.length > 0,
+        candidateCount: productsForPrompt.length,
+        chunkCount: ragChunks.length,
+      },
     });
 
   } catch (error) {
