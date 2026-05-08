@@ -12,6 +12,12 @@ const TEMPLATE_SLIDE_ID =
   process.env.GOOGLE_SLIDES_TEMPLATE_ID ||
   "1XgYlc3oQdNfqnz0dar-J_JHLHINFUQfR56LfT4ys9J0";
 const GOOGLE_DRIVE_UPLOAD_FOLDER_ID = process.env.GOOGLE_DRIVE_UPLOAD_FOLDER_ID || null;
+const IMAGE_PROXY_PERMISSION_WAIT_MS = Number.isFinite(Number(process.env.IMAGE_PROXY_PERMISSION_WAIT_MS))
+  ? Math.max(0, Number(process.env.IMAGE_PROXY_PERMISSION_WAIT_MS))
+  : 300;
+const BATCH_EXPORT_FAST_MODE_THRESHOLD = Number.isFinite(Number(process.env.BATCH_EXPORT_FAST_MODE_THRESHOLD))
+  ? Math.max(1, Number(process.env.BATCH_EXPORT_FAST_MODE_THRESHOLD))
+  : 12;
 
 // Placeholder image for products without photos
 // A simple grey image with "No Image" text, hosted on a reliable public CDN
@@ -169,8 +175,9 @@ async function proxyImageToDrive(drive, imageUrl, { roundCorners = true } = {}) 
       },
     });
 
-    // Wait for permission propagation so Google Slides can access the image
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    if (IMAGE_PROXY_PERMISSION_WAIT_MS > 0) {
+      await new Promise(resolve => setTimeout(resolve, IMAGE_PROXY_PERMISSION_WAIT_MS));
+    }
 
     // Use Google's CDN URL — returns raw image bytes without redirects.
     // This is the most reliable URL format for Google Slides replaceImage API.
@@ -196,26 +203,73 @@ async function cleanupDriveFiles(drive, fileIds) {
   }
 }
 
+async function mapWithConcurrency(items, concurrency, handler) {
+  if (!Array.isArray(items) || items.length === 0) return [];
+
+  const safeConcurrency = Math.max(1, Math.min(concurrency, items.length));
+  const results = new Array(items.length);
+  let currentIndex = 0;
+
+  const workers = Array.from({ length: safeConcurrency }, async () => {
+    while (true) {
+      const index = currentIndex;
+      currentIndex += 1;
+      if (index >= items.length) return;
+
+      results[index] = await handler(items[index], index);
+    }
+  });
+
+  await Promise.all(workers);
+  return results;
+}
+
 /**
  * Insert product images into a slide using createImage API.
  * Tries direct URL first; falls back to proxying through Google Drive.
  * Returns array of temp Drive file IDs for cleanup.
  */
-async function insertImagesOnSlide(slides, drive, presentationId, slideId, imageUrls) {
+async function insertImagesOnSlide(slides, drive, presentationId, slideId, imageUrls, options = {}) {
+  const { roundCorners = true, preferDirectUrl = false } = options;
   const tempFileIds = [];
+  const createdImageIds = [];
 
-  for (let j = 0; j < Math.min(imageUrls.length, IMAGE_TARGETS.length); j++) {
-    const imgUrl = imageUrls[j];
-    if (!imgUrl) continue;
-    const target = IMAGE_TARGETS[j];
+  const imageJobs = imageUrls
+    .slice(0, IMAGE_TARGETS.length)
+    .map((imgUrl, j) => ({ imgUrl, j, target: IMAGE_TARGETS[j] }))
+    .filter(job => Boolean(job.imgUrl));
 
-    // Always proxy through Drive to apply rounded corners
-    const proxied = await proxyImageToDrive(drive, imgUrl);
-    const finalUrl = proxied ? proxied.url : imgUrl;
-    if (proxied) tempFileIds.push(proxied.fileId);
+  const preparedImages = await Promise.all(imageJobs.map(async (job) => {
+    if (preferDirectUrl) {
+      return {
+        ...job,
+        finalUrl: job.imgUrl,
+        proxiedFileId: undefined,
+      };
+    }
+
+    const proxied = await proxyImageToDrive(drive, job.imgUrl, { roundCorners });
+    return {
+      ...job,
+      finalUrl: proxied?.url || job.imgUrl,
+      proxiedFileId: proxied?.fileId,
+    };
+  }));
+
+  for (const preparedImage of preparedImages) {
+    const { j, imgUrl, target } = preparedImage;
+    let finalUrl = preparedImage.finalUrl;
+    let proxiedFileId = preparedImage.proxiedFileId;
+
+    if (proxiedFileId) tempFileIds.push(proxiedFileId);
+
+    const imageObjectId = `img_${slideId}_${j}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`
+      .replace(/[^a-zA-Z0-9_]/g, '_')
+      .slice(0, 50);
 
     const createReq = {
       createImage: {
+        objectId: imageObjectId,
         url: finalUrl,
         elementProperties: {
           pageObjectId: slideId,
@@ -236,80 +290,78 @@ async function insertImagesOnSlide(slides, drive, presentationId, slideId, image
       },
     };
 
-    try {
+    const createImage = async (url) => {
+      createReq.createImage.url = url;
       await slides.presentations.batchUpdate({
         presentationId,
         requestBody: { requests: [createReq] },
       });
-      console.log(`  ✅ Created image ${j} on slide ${slideId}${proxied ? ' (rounded corners)' : ''}`);
+    };
+
+    try {
+      await createImage(finalUrl);
+      createdImageIds.push(imageObjectId);
+      console.log(`  ✅ Created image ${j} on slide ${slideId}${proxiedFileId ? ' (proxied)' : ''}`);
     } catch (err) {
       console.warn(`  ⚠️ createImage failed for image ${j} on slide ${slideId}: ${err.message}`);
-      // If proxied URL failed, try original URL as last resort
-      if (proxied) {
-        createReq.createImage.url = imgUrl;
+
+      if (preferDirectUrl) {
+        const proxied = await proxyImageToDrive(drive, imgUrl, { roundCorners });
+        if (proxied) {
+          proxiedFileId = proxied.fileId;
+          tempFileIds.push(proxied.fileId);
+          finalUrl = proxied.url;
+        }
+      }
+
+      if (finalUrl !== imgUrl) {
         try {
-          await slides.presentations.batchUpdate({
-            presentationId,
-            requestBody: { requests: [createReq] },
-          });
-          console.log(`  ✅ Created image ${j} on slide ${slideId} (fallback, no rounded corners)`);
+          await createImage(imgUrl);
+          createdImageIds.push(imageObjectId);
+          console.log(`  ✅ Created image ${j} on slide ${slideId} (fallback original URL)`);
         } catch (fallbackErr) {
           console.warn(`  ⚠️ Fallback also failed for slide ${slideId}: ${fallbackErr.message}`);
+        }
+      } else if (preferDirectUrl && proxiedFileId) {
+        try {
+          await createImage(finalUrl);
+          createdImageIds.push(imageObjectId);
+          console.log(`  ✅ Created image ${j} on slide ${slideId} (fallback proxied URL)`);
+        } catch (proxyFallbackErr) {
+          console.warn(`  ⚠️ Proxy fallback failed for slide ${slideId}: ${proxyFallbackErr.message}`);
         }
       }
     }
   }
 
-  // Adjust z-order: images should be ABOVE the background shape but BELOW text/icons.
-  // Strategy: send each image to back (behind background), then bring forward once
-  // so it sits just above the full-slide background shape.
-  try {
-    const pres = await slides.presentations.get({ presentationId });
-    const slide = (pres.data.slides || []).find(s => s.objectId === slideId);
-    if (slide) {
-      const allElements = slide.pageElements || [];
-      // Find our newly created large images
-      const newImages = allElements
-        .filter(el => el.image)
-        .filter(el => {
-          const rendered = {
-            w: (el.size?.width?.magnitude || 0) * Math.abs(el.transform?.scaleX || 1),
-            h: (el.size?.height?.magnitude || 0) * Math.abs(el.transform?.scaleY || 1),
-          };
-          // Our created images are large (> 2 inches)
-          return rendered.w > 2 * EMU_PER_INCH && rendered.h > 2 * EMU_PER_INCH;
-        });
+  if (createdImageIds.length > 0) {
+    try {
+      await slides.presentations.batchUpdate({
+        presentationId,
+        requestBody: {
+          requests: [{
+            updatePageElementsZOrder: {
+              pageElementObjectIds: createdImageIds,
+              operation: 'SEND_TO_BACK',
+            },
+          }],
+        },
+      });
 
-      if (newImages.length > 0) {
-        // Step 1: Send each image to the very back
-        for (const img of newImages) {
-          await slides.presentations.batchUpdate({
-            presentationId,
-            requestBody: { requests: [{
-              updatePageElementsZOrder: {
-                pageElementObjectIds: [img.objectId],
-                operation: 'SEND_TO_BACK',
-              },
-            }] },
-          });
-        }
-        // Step 2: Bring each image forward once (above background shape, below everything else)
-        for (const img of newImages) {
-          await slides.presentations.batchUpdate({
-            presentationId,
-            requestBody: { requests: [{
-              updatePageElementsZOrder: {
-                pageElementObjectIds: [img.objectId],
-                operation: 'BRING_FORWARD',
-              },
-            }] },
-          });
-        }
-        console.log(`  Z-ordered ${newImages.length} images: above background, below text on slide ${slideId}`);
-      }
+      await slides.presentations.batchUpdate({
+        presentationId,
+        requestBody: {
+          requests: [{
+            updatePageElementsZOrder: {
+              pageElementObjectIds: createdImageIds,
+              operation: 'BRING_FORWARD',
+            },
+          }],
+        },
+      });
+    } catch (zErr) {
+      console.warn(`  ⚠️ Z-order adjustment failed: ${zErr.message}`);
     }
-  } catch (zErr) {
-    console.warn(`  ⚠️ Z-order adjustment failed: ${zErr.message}`);
   }
 
   return tempFileIds;
@@ -783,22 +835,30 @@ export async function exportMultipleProductsToSlides(products) {
   const productSlideMap = [];
   productSlideMap.push([...originalSlideIds]); // product 0 uses the originals
 
-  for (let i = 1; i < products.length; i++) {
-    const dupRequests = originalSlideIds.map(slideId => ({
-      duplicateObject: { objectId: slideId },
-    }));
+  if (products.length > 1) {
+    const dupRequests = [];
+    for (let i = 1; i < products.length; i++) {
+      for (const slideId of originalSlideIds) {
+        dupRequests.push({ duplicateObject: { objectId: slideId } });
+      }
+    }
 
     const dupResult = await slides.presentations.batchUpdate({
       presentationId,
       requestBody: { requests: dupRequests },
     });
 
-    const newSlideIds = dupResult.data.replies
+    const duplicatedSlideIds = dupResult.data.replies
       ?.map(r => r.duplicateObject?.objectId)
       .filter(Boolean) || [];
 
-    productSlideMap.push(newSlideIds);
-    console.log(`Duplicated slides for product ${i}: ${newSlideIds.join(', ')}`);
+    const templateSlideCount = originalSlideIds.length;
+    for (let i = 1; i < products.length; i++) {
+      const start = (i - 1) * templateSlideCount;
+      const newSlideIds = duplicatedSlideIds.slice(start, start + templateSlideCount);
+      productSlideMap.push(newSlideIds);
+      console.log(`Duplicated slides for product ${i}: ${newSlideIds.join(', ')}`);
+    }
   }
 
   // 4. Apply scoped text replacements per product
@@ -829,23 +889,42 @@ export async function exportMultipleProductsToSlides(products) {
 
   // 5. Insert images per product using createImage API
   const allTempFileIds = [];
+  const useFastImageMode = products.length >= BATCH_EXPORT_FAST_MODE_THRESHOLD;
+  if (useFastImageMode) {
+    console.log(`⚡ Fast image mode enabled for batch export (${products.length} products)`);
+  }
 
-  for (let i = 0; i < products.length; i++) {
-    const product = products[i];
+  const imageTaskResults = await mapWithConcurrency(products, useFastImageMode ? 4 : 2, async (product, i) => {
     const slideIds = productSlideMap[i];
-
     const { primaryUrls, tempFileIds } = await prepareProductImages(drive, product, 2);
-    allTempFileIds.push(...tempFileIds);
 
     const imagesToUse = primaryUrls.length > 0
       ? primaryUrls
       : [PLACEHOLDER_IMAGE_URL, PLACEHOLDER_IMAGE_URL];
 
-    // Insert images on the first slide of this product's slide set
     const slideId = slideIds[0];
-    if (slideId) {
-      const insertTempIds = await insertImagesOnSlide(slides, drive, presentationId, slideId, imagesToUse);
-      allTempFileIds.push(...insertTempIds);
+    if (!slideId) {
+      return tempFileIds;
+    }
+
+    const insertTempIds = await insertImagesOnSlide(
+      slides,
+      drive,
+      presentationId,
+      slideId,
+      imagesToUse,
+      {
+        roundCorners: !useFastImageMode,
+        preferDirectUrl: useFastImageMode,
+      }
+    );
+
+    return [...tempFileIds, ...insertTempIds];
+  });
+
+  for (const tempIds of imageTaskResults) {
+    if (Array.isArray(tempIds) && tempIds.length > 0) {
+      allTempFileIds.push(...tempIds);
     }
   }
 

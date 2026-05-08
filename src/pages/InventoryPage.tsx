@@ -194,13 +194,8 @@ const InventoryPage = () => {
     try {
       const result = await exportProductToSlides(product)
       setExportResult(result)
-      // Auto-download the PPTX file
-      const a = document.createElement('a')
-      a.href = result.downloadUrl
-      a.download = `${result.fileName}.pptx`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
+      // Open Google Slides in new tab
+      window.open(result.slideUrl, '_blank')
     } catch (err) {
       setExportError(err instanceof Error ? err.message : 'Export failed')
     } finally {
@@ -217,12 +212,8 @@ const InventoryPage = () => {
       const selectedProducts = products.filter(p => selectedProductIds.has(p.id))
       const result = await exportMultipleProductsToSlides(selectedProducts)
       setExportResult(result)
-      const a = document.createElement('a')
-      a.href = result.downloadUrl
-      a.download = `${result.fileName}.pptx`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
+      // Open Google Slides in new tab
+      window.open(result.slideUrl, '_blank')
       setSelectedProductIds(new Set())
     } catch (err) {
       setExportError(err instanceof Error ? err.message : 'Batch export failed')

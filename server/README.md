@@ -26,6 +26,9 @@ Edit `.env` and add your Anthropic API key:
 ANTHROPIC_API_KEY=sk-ant-api03-xxxxx
 PORT=3001
 CORS_ORIGIN=*
+# Optional: speed tuning for Google Slides batch export
+IMAGE_PROXY_PERMISSION_WAIT_MS=300
+BATCH_EXPORT_FAST_MODE_THRESHOLD=12
 ```
 
 ### 2. Running Locally
